@@ -71,19 +71,123 @@ func (a *App) GetSuggestedBackupPaths() ([]string, error) {
 // GetSuggestedIgnorePatterns returns a list of common patterns to ignore.
 func (a *App) GetSuggestedIgnorePatterns() []string {
 	return []string{
-		"node_modules",
-		".DS_Store",
-		"Thumbs.db",
-		"*.tmp",
+		// Development and build directories
+		"dist/",
+		"build/",
+		"node_modules/",
+		".next/",
+		".nuxt/",
+		".output/",
+		".cache/",
+		".turbo/",
+		".vercel/",
+		".netlify/",
+		
+		// Version control
+		".git/",
+		".svn/",
+		".hg/",
+		".gitignore",
+		
+		// Platform-specific files
+		".DS_Store",          // macOS
+		"Thumbs.db",           // Windows
+		"desktop.ini",         // Windows
+		".Spotlight-V100",     // macOS
+		".Trashes",            // macOS
+		"fseventsd",           // macOS
+		"._*",                 // macOS resource forks
+		
+		// Logs and temporary files
+		"coverage/",
+		"tmp/",
+		"logs/",
 		"*.log",
+		"*.tmp",
 		"*.bak",
 		"*.swp",
-		".git",
-		".svn",
-		".hg",
-		"__pycache__",
+		"*.swo",
+		"*~",
+		
+		// Package manager caches
+		".pnpm-store/",
+		".npm/",
+		".yarn/",
+		".pnpm/",
+		"package-lock.json",
+		"yarn.lock",
+		"pnpm-lock.yaml",
+		
+		// Home directory specific ignores (common development directories)
+		"~/.nvm/",
+		"~/.bun/",
+		"~/.pnpm-store/",
+		
+		// Python
+		"__pycache__/",
 		"*.pyc",
+		"*.pyo",
+		"*.pyd",
+		".Python",
+		"pip-log.txt",
+		"pip-delete-this-directory.txt",
+		
+		// Node.js
+		".npmrc",
+		".node_repl_history",
+		".yarn-integrity",
+		".env.local",
+		".env.development.local",
+		".env.test.local",
+		".env.production.local",
+		
+		// IDE and editor files
+		".vscode/",
+		".idea/",
+		".vs/",
+		"*.sublime-*",
+		".editorconfig",
+		
+		// OS generated files
+		"ehthumbs.db",
+		"Desktop.ini",
+		"$RECYCLE.BIN/",
+		
+		// Virtual environments
+		"venv/",
+		"env/",
+		".venv/",
+		".env/",
+		"virtualenv/",
+		
+		// CI/CD
+		".github/",
+		".gitlab-ci.yml",
+		".travis.yml",
+		".circleci/",
 	}
+}
+
+// SelectSourceDirectory opens a directory selection dialog for source directories
+func (a *App) SelectSourceDirectory() (string, error) {
+	selection, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select Source Directory",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to open directory dialog: %w", err)
+	}
+	return selection, nil
+}
+
+// SelectDestinationDirectory opens a directory selection dialog for destination
+func (a *App) SelectDestinationDirectory() (string, error) {
+	selection, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select Backup Destination",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to open directory dialog: %w", err)
+	}
+	return selection, nil
 }
 
 // StartBackup initiates the backup process.

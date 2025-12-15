@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { EventsOn, EventsOff, OpenDirectoryDialog } from '../wailsjs/runtime';
-import { App } from '../wailsjs/go/main/App'; // Assuming the Go App struct is in main package
+import { EventsOn, EventsOff } from '../wailsjs/runtime';
+import * as App from '../wailsjs/go/main/App'; // Import all functions from App namespace
 
 // Define the shape of the BackupProgress object
 interface BackupProgress {
@@ -85,9 +85,17 @@ function BackupApp() {
     };
 
     const handleAddSourcePath = async () => {
-        const selectedDir = await OpenDirectoryDialog();
-        if (selectedDir && !sourcePaths.includes(selectedDir)) {
-            setSourcePaths(prev => [...prev, selectedDir]);
+        try {
+            const selectedDir = await App.SelectSourceDirectory();
+            if (selectedDir && !sourcePaths.includes(selectedDir)) {
+                setSourcePaths(prev => [...prev, selectedDir]);
+                addLog(`Added source directory: ${selectedDir}`);
+            } else if (selectedDir && sourcePaths.includes(selectedDir)) {
+                addLog('Source directory already exists in list.');
+            }
+        } catch (err) {
+            console.error("Error selecting source directory:", err);
+            addLog(`Error selecting source directory: ${err}`);
         }
     };
 
@@ -129,10 +137,16 @@ function BackupApp() {
     };
 
     const handleSelectDestinationPath = async () => {
-        const selectedDir = await OpenDirectoryDialog();
-        if (selectedDir) {
-            setDestinationPath(selectedDir);
-            localStorage.setItem('backupDestinationPath', selectedDir); // Persist
+        try {
+            const selectedDir = await App.SelectDestinationDirectory();
+            if (selectedDir) {
+                setDestinationPath(selectedDir);
+                localStorage.setItem('backupDestinationPath', selectedDir); // Persist
+                addLog(`Selected backup destination: ${selectedDir}`);
+            }
+        } catch (err) {
+            console.error("Error selecting destination directory:", err);
+            addLog(`Error selecting destination directory: ${err}`);
         }
     };
 
