@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import './App.css';
+
 import { EventsOn, EventsOff } from '../wailsjs/runtime';
 import * as App from '../wailsjs/go/main/App'; // Import all functions from App namespace
 
