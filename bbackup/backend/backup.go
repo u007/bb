@@ -28,6 +28,11 @@ type ProgressCallback func(progress BackupProgress)
 // RunBackup orchestrates the entire backup process for specified source paths to a CAS base directory.
 // It reports progress via the provided ProgressCallback.
 func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, progressCallback ProgressCallback) error {
+	return RunBackupWithBatchConfig(ctx, casBaseDir, sourcePaths, ignorePatterns, progressCallback, DefaultBatchConfig())
+}
+
+// RunBackupWithBatchConfig orchestrates the entire backup process with custom batch configuration.
+func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, progressCallback ProgressCallback, config BatchConfig) error {
 	var currentProgress BackupProgress
 	updateProgress := func() {
 		if progressCallback != nil {
@@ -63,15 +68,21 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 		updateProgress()
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Creating new snapshot\n")
-	newSnapshot := &Snapshot{
-		Timestamp: time.Now(),
-		Source:    sourcePaths,
-		Files:     make(map[string]*FileEntry),
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating streaming snapshot writer\n")
+	snapshotID := fmt.Sprintf("%d", time.Now().Unix())
+	snapshotWriter, err := NewStreamingSnapshotWriter(casBaseDir, snapshotID, sourcePaths)
+	if err != nil {
+		currentProgress.Status = "Failed"
+		currentProgress.Error = fmt.Sprintf("Failed to create snapshot writer: %v", err)
+		updateProgress()
+		return fmt.Errorf("failed to create snapshot writer: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "DEBUG: New snapshot created, about to start file processing\n")
+	defer snapshotWriter.Close()
+	fmt.Fprintf(os.Stderr, "DEBUG: Streaming snapshot writer created, about to start file processing\n")
 
 	fileCount := 0
+	batchCount := 0
+	lastFlushTime := time.Now()
 	// First pass: count files and estimate total size (optional, for more accurate progress)
 	// For simplicity, we'll iterate and count on the fly for now.
 	// A more robust solution might do a pre-scan to get TotalFiles and TotalBytes.
@@ -111,10 +122,18 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 				// Continue
 			}
 			
-			// Prevent UI blocking by yielding control periodically
+			// Memory management and batch processing
 			if fileCount%100 == 0 {
 				// Give other goroutines a chance to run every 100 files
 				runtime.Gosched()
+				
+				// Check memory usage
+				memStats := GetMemoryStats()
+				if memStats.Alloc > uint64(config.MemoryLimit) {
+					fmt.Fprintf(os.Stderr, "DEBUG: Memory limit reached (%d > %d), forcing GC\n", memStats.Alloc, config.MemoryLimit)
+					runtime.GC()
+					runtime.Gosched()
+				}
 			}
 
 			if err != nil {
@@ -246,7 +265,33 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 				updateProgress()
 			}
 			currentFileEntry.Hash = fileHash
-			newSnapshot.Files[relPath] = currentFileEntry
+			
+			// Add to streaming snapshot writer with batch processing
+			if err := snapshotWriter.AddFile(currentFileEntry); err != nil {
+				currentProgress.Status = "✗ Failed"
+				currentProgress.Error = fmt.Sprintf("Failed to add file to snapshot: %v", err)
+				updateProgress()
+				return fmt.Errorf("failed to add file to snapshot: %w", err)
+			}
+			
+			batchCount++
+			
+			// Batch processing: flush based on count or time
+			timeSinceFlush := time.Since(lastFlushTime)
+			if batchCount >= config.BatchSize || timeSinceFlush >= config.FlushInterval {
+				fmt.Fprintf(os.Stderr, "DEBUG: Flushing batch (count: %d, time: %v)\n", batchCount, timeSinceFlush)
+				if err := snapshotWriter.writer.Flush(); err != nil {
+					currentProgress.Status = "✗ Failed"
+					currentProgress.Error = fmt.Sprintf("Failed to flush snapshot writer: %v", err)
+					updateProgress()
+					return fmt.Errorf("failed to flush snapshot writer: %w", err)
+				}
+				batchCount = 0
+				lastFlushTime = time.Now()
+				
+				// Force garbage collection to free memory
+				runtime.GC()
+			}
 			
 			// Only count bytes for files that were actually transferred
 			if fileChanged {
@@ -270,32 +315,43 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 		}
 	}
 
-	// Calculate sync statistics
-	totalFiles := len(newSnapshot.Files)
-	changedFiles := 0
-	if latestSnapshot != nil {
-		for relPath, entry := range newSnapshot.Files {
-			if prevEntry, exists := latestSnapshot.Files[relPath]; !exists || prevEntry.Hash != entry.Hash {
-				changedFiles++
-			}
+	// Final flush and close of streaming snapshot writer
+	fmt.Fprintf(os.Stderr, "DEBUG: Final flush and close of streaming snapshot writer\n")
+	if batchCount > 0 {
+		if err := snapshotWriter.writer.Flush(); err != nil {
+			currentProgress.Status = "Failed"
+			currentProgress.Error = fmt.Sprintf("Failed to flush final batch: %v", err)
+			updateProgress()
+			return fmt.Errorf("failed to flush final batch: %w", err)
 		}
-	} else {
-		changedFiles = totalFiles // First backup
 	}
-	
-	currentProgress.Status = fmt.Sprintf("Saving snapshot (%d/%d files changed)", changedFiles, totalFiles)
+
+	currentProgress.Status = "Finalizing snapshot..."
 	updateProgress()
 
-	// 2. Save the new snapshot
-	if err := SaveSnapshot(casBaseDir, newSnapshot); err != nil {
+	// Close the streaming snapshot writer (this finalizes the snapshot)
+	if err := snapshotWriter.Close(); err != nil {
 		currentProgress.Status = "Failed"
-		currentProgress.Error = fmt.Sprintf("Failed to save new snapshot: %v", err)
+		currentProgress.Error = fmt.Sprintf("Failed to close snapshot writer: %v", err)
 		updateProgress()
-		return fmt.Errorf("failed to save new snapshot: %w", err)
+		return fmt.Errorf("failed to close snapshot writer: %w", err)
 	}
 
-	currentProgress.Status = fmt.Sprintf("✓ Completed: %d files, %d changed, %.2f MB transferred", 
+	// Load the final snapshot to get statistics (optional, for logging only)
+	_, err = LoadLatestSnapshot(casBaseDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load final snapshot for stats: %v\n", err)
+	}
+
+	totalFiles := fileCount
+	changedFiles := currentProgress.FilesProcessed // Approximate since we're streaming
+	
+	currentProgress.Status = fmt.Sprintf("✓ Completed: %d files, %d processed, %.2f MB transferred", 
 		totalFiles, changedFiles, float64(currentProgress.BytesTransferred)/1024/1024)
 	updateProgress()
+	
+	// Final memory cleanup
+	runtime.GC()
+	fmt.Fprintf(os.Stderr, "DEBUG: Backup completed successfully\n")
 	return nil
 }
