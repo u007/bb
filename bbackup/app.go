@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -220,8 +221,16 @@ func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePattern
 		backupCtx, cancel := context.WithCancel(a.ctx)
 		defer cancel()
 
-		// Progress callback function
+		// Progress callback function with left-aligned logging
 		progressCb := func(progress backend.BackupProgress) {
+			// Only log meaningful status changes, not every progress update
+			if progress.Status != "" && !strings.Contains(progress.Status, "Processing file") {
+				if progress.CurrentFile != "" {
+					wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("%s %s", progress.Status, progress.CurrentFile))
+				} else {
+					wailsruntime.EventsEmit(a.ctx, "app:log", progress.Status)
+				}
+			}
 			jsonProgress, err := json.Marshal(progress)
 			if err != nil {
 				wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Error marshalling progress: %v", err))
@@ -243,4 +252,52 @@ func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePattern
 			wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Completed")
 		}
 	}()
+}
+
+// GetSystemInfo returns system information that might be useful for backup configuration
+func (a *App) GetSystemInfo() (map[string]interface{}, error) {
+	info := make(map[string]interface{})
+	
+	// Get OS information
+	info["os"] = runtime.GOOS
+	info["arch"] = runtime.GOARCH
+	
+	// Get home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		info["homeDir"] = "Unknown"
+	} else {
+		info["homeDir"] = homeDir
+	}
+	
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		info["currentDir"] = "Unknown"
+	} else {
+		info["currentDir"] = cwd
+	}
+	
+	return info, nil
+}
+
+// ValidateBackupPath checks if a path is valid for backup
+func (a *App) ValidateBackupPath(path string) (bool, error) {
+	// Check if path exists
+	_, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil // Path doesn't exist
+		}
+		return false, err // Other error
+	}
+	
+	// Check if it's readable
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	file.Close()
+	
+	return true, nil
 }

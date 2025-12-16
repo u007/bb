@@ -150,34 +150,49 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 				ModTime: fileInfo.ModTime(),
 			}
 
-			// Compare with latest snapshot
+			// Compare with latest snapshot - rsync-like optimization
 			var fileHash string
-			var contentStored bool
+			var fileChanged bool
+			
 			if latestSnapshot != nil {
 				if prevEntry, ok := latestSnapshot.Files[relPath]; ok {
+					// Quick check: size and mtime match means file is unchanged
 					if prevEntry.Size == currentFileEntry.Size &&
 						prevEntry.ModTime.Equal(currentFileEntry.ModTime) {
-						fileHash = prevEntry.Hash // Use previous hash, no need to re-store
-						contentStored = true
+						fileHash = prevEntry.Hash
+					} else {
+						fileChanged = true
 					}
+				} else {
+					fileChanged = true // New file
 				}
+			} else {
+				fileChanged = true // First backup
 			}
 
-			if !contentStored { // File is new or modified, or not in previous snapshot
-				currentProgress.Status = "Storing content for " + filepath.Base(path)
+			if fileChanged {
+				currentProgress.Status = "↻ " + filepath.Base(path) // Changed file indicator
 				updateProgress()
 				hash, err := StoreFileContent(casBaseDir, path)
 				if err != nil {
-					currentProgress.Status = "Failed"
+					currentProgress.Status = "✗ Failed"
 					currentProgress.Error = fmt.Sprintf("Failed to store content for %s: %v", path, err)
 					updateProgress()
 					return fmt.Errorf("failed to store content for %s: %w", path, err)
 				}
 				fileHash = hash
+			} else {
+				currentProgress.Status = "= " + filepath.Base(path) // Unchanged file indicator
+				currentProgress.FilesProcessed-- // Don't count as processed for progress
+				updateProgress()
 			}
 			currentFileEntry.Hash = fileHash
 			newSnapshot.Files[relPath] = currentFileEntry
-			currentProgress.BytesTransferred += fileInfo.Size() // Accumulate bytes
+			
+			// Only count bytes for files that were actually transferred
+			if fileChanged {
+				currentProgress.BytesTransferred += fileInfo.Size()
+			}
 			updateProgress()
 
 			return nil
@@ -196,7 +211,20 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 		}
 	}
 
-	currentProgress.Status = "Saving snapshot"
+	// Calculate sync statistics
+	totalFiles := len(newSnapshot.Files)
+	changedFiles := 0
+	if latestSnapshot != nil {
+		for relPath, entry := range newSnapshot.Files {
+			if prevEntry, exists := latestSnapshot.Files[relPath]; !exists || prevEntry.Hash != entry.Hash {
+				changedFiles++
+			}
+		}
+	} else {
+		changedFiles = totalFiles // First backup
+	}
+	
+	currentProgress.Status = fmt.Sprintf("Saving snapshot (%d/%d files changed)", changedFiles, totalFiles)
 	updateProgress()
 
 	// 2. Save the new snapshot
@@ -207,7 +235,8 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 		return fmt.Errorf("failed to save new snapshot: %w", err)
 	}
 
-	currentProgress.Status = "Completed"
+	currentProgress.Status = fmt.Sprintf("✓ Completed: %d files, %d changed, %.2f MB transferred", 
+		totalFiles, changedFiles, float64(currentProgress.BytesTransferred)/1024/1024)
 	updateProgress()
 	return nil
 }

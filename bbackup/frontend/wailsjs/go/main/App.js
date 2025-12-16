@@ -10,6 +10,10 @@ export function GetSuggestedIgnorePatterns() {
   return window['go']['main']['App']['GetSuggestedIgnorePatterns']();
 }
 
+export function GetSystemInfo() {
+  return window['go']['main']['App']['GetSystemInfo']();
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
@@ -24,4 +28,8 @@ export function SelectSourceDirectory() {
 
 export function StartBackup(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartBackup'](arg1, arg2, arg3);
+}
+
+export function ValidateBackupPath(arg1) {
+  return window['go']['main']['App']['ValidateBackupPath'](arg1);
 }

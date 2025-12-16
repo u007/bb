@@ -5,6 +5,8 @@ export function GetSuggestedBackupPaths():Promise<Array<string>>;
 
 export function GetSuggestedIgnorePatterns():Promise<Array<string>>;
 
+export function GetSystemInfo():Promise<Record<string, any>>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function SelectDestinationDirectory():Promise<string>;
@@ -12,3 +14,5 @@ export function SelectDestinationDirectory():Promise<string>;
 export function SelectSourceDirectory():Promise<string>;
 
 export function StartBackup(arg1:string,arg2:Array<string>,arg3:Array<string>):Promise<void>;
+
+export function ValidateBackupPath(arg1:string):Promise<boolean>;
