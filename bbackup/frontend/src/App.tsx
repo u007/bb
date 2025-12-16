@@ -130,9 +130,12 @@ function BackupApp() {
         // Listen for resumable backup notifications
         EventsOn('app:backup:resumable', (message: string) => {
             addLog(message);
-            if (confirm('Found an interrupted backup. Would you like to resume it?')) {
-                handleResumeBackup();
-            }
+            // Use setTimeout to prevent blocking the event handler
+            setTimeout(() => {
+                if (confirm('Found an interrupted backup. Would you like to resume it?')) {
+                    handleResumeBackup();
+                }
+            }, 0);
         });
 
         // Check for existing backup state on app startup
