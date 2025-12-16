@@ -42,36 +42,51 @@ func snapshotFilePath(casBaseDir, snapshotID string) string {
 // Returns nil, nil if no snapshots are found.
 func LoadLatestSnapshot(casBaseDir string) (*Snapshot, error) {
 	snapDir := snapshotsDir(casBaseDir)
-	entries, err := os.ReadDir(snapDir)
+	
+	// Check if directory exists before trying to read it
+	if stat, err := os.Stat(snapDir); os.IsNotExist(err) {
+		return nil, nil // No snapshots directory, so no snapshots
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to access snapshots directory %s: %w", snapDir, err)
+	} else if !stat.IsDir() {
+		return nil, fmt.Errorf("snapshots path %s exists but is not a directory", snapDir)
+	}
+	
+	// Open directory with a file handle to ensure it's readable
+	dir, err := os.Open(snapDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No snapshots directory, so no snapshots
-		}
-		return nil, fmt.Errorf("failed to read snapshots directory %s: %w", snapDir, err)
+		return nil, fmt.Errorf("failed to open snapshots directory %s: %w", snapDir, err)
+	}
+	defer dir.Close()
+	
+	// Read directory entries
+	entries, err := dir.Readdirnames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read snapshots directory entries %s: %w", snapDir, err)
 	}
 
 	var latestSnapshotID string
 	var latestTime time.Time
 
 	// Sort entries to find the latest snapshot by name (assuming timestamp-based names)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() > entries[j].Name() // Descending order
-	})
+	sort.Strings(entries)
 
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			id := strings.TrimSuffix(entry.Name(), ".json")
-			t, err := time.Parse("20060102150405", id) // Expecting format YYYYMMDDhhmmss
-			if err != nil {
-				// Log error but continue to find valid snapshots
-				fmt.Fprintf(os.Stderr, "Warning: Invalid snapshot ID format '%s': %v\n", id, err)
-				continue
-			}
+	for _, entryName := range entries {
+		if !strings.HasSuffix(entryName, ".json") {
+			continue
+		}
+		
+		id := strings.TrimSuffix(entryName, ".json")
+		t, err := time.Parse("20060102150405", id) // Expecting format YYYYMMDDhhmmss
+		if err != nil {
+			// Log error but continue to find valid snapshots
+			fmt.Fprintf(os.Stderr, "Warning: Invalid snapshot ID format '%s': %v\n", id, err)
+			continue
+		}
 
-			if latestTime.IsZero() || t.After(latestTime) {
-				latestTime = t
-				latestSnapshotID = id
-			}
+		if latestTime.IsZero() || t.After(latestTime) {
+			latestTime = t
+			latestSnapshotID = id
 		}
 	}
 

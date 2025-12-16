@@ -56,6 +56,72 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	
+	// Check for any interrupted backups and restore state
+	go a.checkAndRestoreInterruptedBackups()
+}
+
+// checkAndRestoreInterruptedBackups looks for any backup state files and restores them
+func (a *App) checkAndRestoreInterruptedBackups() {
+	// Get suggested destination paths or use common locations
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		wailsruntime.EventsEmit(a.ctx, "app:log", "Warning: Could not determine home directory")
+		return
+	}
+	
+	// Common backup destinations to check
+	commonDests := []string{
+		filepath.Join(homeDir, "Backups"),
+		filepath.Join(homeDir, "backup"),
+		filepath.Join(homeDir, "bbackup"),
+	}
+	
+	for _, dest := range commonDests {
+		if state, err := a.loadBackupState(dest); err == nil && state != nil {
+			// Found an interrupted backup
+			a.backupMutex.Lock()
+			a.backupState = state
+			a.backupMutex.Unlock()
+			
+			wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Found interrupted backup in %s", dest))
+			wailsruntime.EventsEmit(a.ctx, "app:backup:resumable", fmt.Sprintf("Interrupted backup found in %s", dest))
+			wailsruntime.EventsEmit(a.ctx, "app:backup:status", state.Status)
+			
+			// Send current progress to frontend
+			jsonProgress, err := json.Marshal(state.Progress)
+			if err == nil {
+				wailsruntime.EventsEmit(a.ctx, "app:backup:progress", string(jsonProgress))
+			}
+			
+			break // Only restore the first one found
+		}
+	}
+}
+
+// CheckAllBackupStates checks all possible backup destinations for running backups
+func (a *App) CheckAllBackupStates() map[string]*BackupState {
+	result := make(map[string]*BackupState)
+	
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return result
+	}
+	
+	// Check common backup destinations
+	commonDests := []string{
+		filepath.Join(homeDir, "Backups"),
+		filepath.Join(homeDir, "backup"),
+		filepath.Join(homeDir, "bbackup"),
+	}
+	
+	for _, dest := range commonDests {
+		if state, err := a.loadBackupState(dest); err == nil && state != nil {
+			result[dest] = state
+		}
+	}
+	
+	return result
 }
 
 // Greet returns a greeting for the given name
@@ -222,6 +288,16 @@ func (a *App) SelectDestinationDirectory() (string, error) {
 // StartBackup initiates the backup process.
 // It runs in a goroutine to avoid blocking the main thread.
 func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePatterns []string) {
+	// Check if backup is already running
+	a.backupMutex.RLock()
+	if a.backupState != nil && (a.backupState.Status == "running" || a.backupState.Status == "paused") {
+		a.backupMutex.RUnlock()
+		wailsruntime.EventsEmit(a.ctx, "app:log", "Backup already in progress")
+		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Already Running")
+		return
+	}
+	a.backupMutex.RUnlock()
+	
 	config := &BackupConfig{
 		ID:              fmt.Sprintf("backup_%d", time.Now().Unix()),
 		SourcePaths:     sourcePaths,
@@ -229,7 +305,22 @@ func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePattern
 		IgnorePatterns:  ignorePatterns,
 	}
 	
-	go a.runBackupWithResume(config, false)
+	// Run backup in background goroutine
+	go func() {
+		// Recover from any panics to prevent crashing the entire app
+		defer func() {
+			if r := recover(); r != nil {
+				wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Backup panic recovered: %v", r))
+				wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
+				a.backupMutex.Lock()
+				a.backupState = nil
+				a.backupCancel = nil
+				a.backupMutex.Unlock()
+			}
+		}()
+		
+		a.runBackupWithResume(config, false)
+	}()
 }
 
 // runBackupWithResume runs a backup with optional resume capability
@@ -307,6 +398,18 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 
 	// Progress callback function with state tracking
 	progressCb := func(progress backend.BackupProgress) {
+		// Check if backup was cancelled before processing progress
+		a.backupMutex.RLock()
+		if a.backupState != nil && a.backupState.Status == "paused" {
+			a.backupMutex.RUnlock()
+			return
+		}
+		if a.backupState != nil && a.backupState.Status == "stopped" {
+			a.backupMutex.RUnlock()
+			return
+		}
+		a.backupMutex.RUnlock()
+		
 		// Update state
 		a.backupMutex.Lock()
 		if a.backupState != nil {
@@ -526,6 +629,9 @@ func (a *App) PauseBackup() error {
 		return fmt.Errorf("backup is not running (current status: %s)", a.backupState.Status)
 	}
 	
+	// Store the current file being processed before canceling
+	currentFile := a.backupState.CurrentFile
+	
 	// Cancel the backup
 	a.backupCancel()
 	a.backupState.Status = "paused"
@@ -537,7 +643,11 @@ func (a *App) PauseBackup() error {
 		wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
 	}
 	
-	wailsruntime.EventsEmit(a.ctx, "app:log", "Backup paused")
+	if currentFile != "" {
+		wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Backup paused while processing: %s", currentFile))
+	} else {
+		wailsruntime.EventsEmit(a.ctx, "app:log", "Backup paused")
+	}
 	wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Paused")
 	
 	return nil

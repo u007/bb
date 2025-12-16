@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -36,13 +38,26 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 	currentProgress.Status = "Initializing"
 	updateProgress()
 
+	// Check for context cancellation early
+	select {
+	case <-ctx.Done():
+		currentProgress.Status = "Cancelled"
+		currentProgress.Error = "Backup cancelled during initialization"
+		updateProgress()
+		return ctx.Err()
+	default:
+	}
+
 	// 1. Load the latest snapshot
+	currentProgress.Status = "Loading previous snapshot..."
+	updateProgress()
 	latestSnapshot, err := LoadLatestSnapshot(casBaseDir)
 	if err != nil {
-		currentProgress.Status = "Failed"
-		currentProgress.Error = fmt.Sprintf("Failed to load latest snapshot: %v", err)
+		// If snapshot loading fails, log warning but continue with no previous snapshot
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load latest snapshot, starting fresh backup: %v\n", err)
+		latestSnapshot = nil
+		currentProgress.Status = "Warning: Could not load previous snapshot, starting fresh"
 		updateProgress()
-		return fmt.Errorf("failed to load latest snapshot: %w", err)
 	}
 
 	newSnapshot := &Snapshot{
@@ -66,13 +81,25 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 			return fmt.Errorf("failed to get absolute path for source %s: %w", sourcePath, err)
 		}
 
+		currentProgress.Status = fmt.Sprintf("Scanning %s...", filepath.Base(sourcePath))
+		updateProgress()
+		
 		err = filepath.WalkDir(absSourcePath, func(path string, d fs.DirEntry, err error) error {
-			// Check for context cancellation
+			// Check for context cancellation more frequently
 			select {
 			case <-ctx.Done():
+				currentProgress.Status = "Cancelled"
+				currentProgress.Error = "Backup cancelled by user"
+				updateProgress()
 				return ctx.Err() // Propagate cancellation error
 			default:
 				// Continue
+			}
+			
+			// Prevent UI blocking by yielding control periodically
+			if fileCount%100 == 0 {
+				// Give other goroutines a chance to run every 100 files
+				runtime.Gosched()
 			}
 
 			if err != nil {
@@ -137,11 +164,22 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 			}
 
 			fileCount++
-			currentProgress.TotalFiles = fileCount // Update total files found so far
+				currentProgress.TotalFiles = fileCount // Update total files found so far
 			currentProgress.FilesProcessed++
 			currentProgress.CurrentFile = path
 			currentProgress.Status = "Processing file"
 			updateProgress()
+			
+			// Check for context cancellation before heavy file operations
+			select {
+			case <-ctx.Done():
+				currentProgress.Status = "Cancelled"
+				currentProgress.Error = "Backup cancelled by user during file processing"
+				updateProgress()
+				return ctx.Err()
+			default:
+				// Continue
+			}
 
 			currentFileEntry := &FileEntry{
 				Path:    relPath,
@@ -173,8 +211,14 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 			if fileChanged {
 				currentProgress.Status = "↻ " + filepath.Base(path) // Changed file indicator
 				updateProgress()
-				hash, err := StoreFileContent(casBaseDir, path)
+				hash, err := StoreFileContentWithContext(ctx, casBaseDir, path)
 				if err != nil {
+					if err == context.Canceled {
+						currentProgress.Status = "Cancelled"
+						currentProgress.Error = "Backup cancelled by user during file processing"
+						updateProgress()
+						return ctx.Err()
+					}
 					currentProgress.Status = "✗ Failed"
 					currentProgress.Error = fmt.Sprintf("Failed to store content for %s: %v", path, err)
 					updateProgress()

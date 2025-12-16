@@ -135,6 +135,51 @@ function BackupApp() {
             }
         });
 
+        // Check for existing backup state on app startup
+        const checkExistingBackupState = async () => {
+            try {
+                const backupStates = await App.CheckAllBackupStates();
+                const activeBackups = Object.entries(backupStates).filter(([_, state]) => 
+                    state.status === 'running' || state.status === 'paused'
+                );
+                
+                if (activeBackups.length > 0) {
+                    const [destination, state] = activeBackups[0]; // Get first active backup
+                    addLog(`Found active backup in ${destination}: ${state.status}`);
+                    
+                    // Set the UI state to match the backup state
+                    setBackupStatus(state.status.charAt(0).toUpperCase() + state.status.slice(1));
+                    
+                    if (state.status === 'running') {
+                        setIsProcessing(true);
+                        setCanPause(true);
+                        setCanStop(true);
+                        setCanResume(false);
+                    } else if (state.status === 'paused') {
+                        setIsProcessing(false);
+                        setCanPause(false);
+                        setCanStop(true);
+                        setCanResume(true);
+                    }
+                    
+                    // Set progress if available
+                    if (state.progress && state.progress.filesProcessed > 0) {
+                        setProgress(state.progress);
+                    }
+                    
+                    // Ask user if they want to resume
+                    if (confirm(`Found ${state.status} backup in ${destination}. Would you like to resume?`)) {
+                        handleResumeBackup();
+                    }
+                }
+            } catch (err) {
+                console.error("Error checking backup state:", err);
+            }
+        };
+        
+        // Check after a short delay to ensure event listeners are set up
+        setTimeout(checkExistingBackupState, 500);
+
         // Cleanup event listeners on component unmount
         return () => {
             EventsOff('app:log');
