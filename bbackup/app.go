@@ -288,28 +288,49 @@ func (a *App) SelectDestinationDirectory() (string, error) {
 // StartBackup initiates the backup process.
 // It runs in a goroutine to avoid blocking the main thread.
 func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePatterns []string) {
+	fmt.Fprintf(os.Stderr, "DEBUG: StartBackup called with casBaseDir=%s, sourcePaths=%v\n", casBaseDir, sourcePaths)
+	
 	// Check if backup is already running
-	a.backupMutex.RLock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Checking if backup already running\n")
+	a.backupMutex.Lock()
 	if a.backupState != nil && (a.backupState.Status == "running" || a.backupState.Status == "paused") {
-		a.backupMutex.RUnlock()
+		a.backupMutex.Unlock()
+		fmt.Fprintf(os.Stderr, "DEBUG: Backup already in progress\n")
 		wailsruntime.EventsEmit(a.ctx, "app:log", "Backup already in progress")
 		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Already Running")
 		return
 	}
-	a.backupMutex.RUnlock()
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating backup config\n")
 	config := &BackupConfig{
 		ID:              fmt.Sprintf("backup_%d", time.Now().Unix()),
 		SourcePaths:     sourcePaths,
 		DestinationPath: casBaseDir,
 		IgnorePatterns:  ignorePatterns,
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Backup config created: ID=%s\n", config.ID)
+	
+	// Set backup state to running IMMEDIATELY to prevent race conditions
+	a.backupState = &BackupState{
+		ID:             config.ID,
+		Status:         "running",
+		Config:         *config,
+		StartTime:      time.Now(),
+		LastUpdateTime: time.Now(),
+		ProcessedFiles: make(map[string]bool),
+	}
+	a.backupMutex.Unlock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Backup state set to running before goroutine\n")
 	
 	// Run backup in background goroutine
+	fmt.Fprintf(os.Stderr, "DEBUG: Starting backup goroutine\n")
 	go func() {
+		fmt.Fprintf(os.Stderr, "DEBUG: Backup goroutine started\n")
 		// Recover from any panics to prevent crashing the entire app
 		defer func() {
+			fmt.Fprintf(os.Stderr, "DEBUG: Backup goroutine defer function called\n")
 			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "DEBUG: Backup panic recovered: %v\n", r)
 				wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Backup panic recovered: %v", r))
 				wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
 				a.backupMutex.Lock()
@@ -319,84 +340,120 @@ func (a *App) StartBackup(casBaseDir string, sourcePaths []string, ignorePattern
 			}
 		}()
 		
+		fmt.Fprintf(os.Stderr, "DEBUG: About to call runBackupWithResume\n")
 		a.runBackupWithResume(config, false)
+		fmt.Fprintf(os.Stderr, "DEBUG: runBackupWithResume returned\n")
 	}()
+	fmt.Fprintf(os.Stderr, "DEBUG: StartBackup function completed\n")
 }
 
 // runBackupWithResume runs a backup with optional resume capability
 func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
+	fmt.Fprintf(os.Stderr, "DEBUG: runBackupWithResume called with resume=%v\n", resume)
 	a.backupMutex.Lock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Acquired backup mutex lock\n")
 	
 	// Check for existing backup state on startup
 	if !resume {
+		fmt.Fprintf(os.Stderr, "DEBUG: Checking for existing backup state\n")
 		// Try to load existing state for this destination
 		existingState, err := a.loadBackupState(config.DestinationPath)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Failed to load existing backup state: %v\n", err)
 			wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Warning: Failed to load existing backup state: %v", err))
 		} else if existingState != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Found existing backup state, will ask user to resume\n")
 			// Found existing state, ask user if they want to resume
 			wailsruntime.EventsEmit(a.ctx, "app:backup:resumable", "Found interrupted backup")
 		}
 	}
 	
-	// Initialize backup state
+	// Backup state is already set in StartBackup, just verify it exists
 	backupID := config.ID
-	if resume && a.backupState != nil {
-		// Use existing state
-		a.backupState.Status = "running"
-		a.backupState.LastUpdateTime = time.Now()
-		backupID = a.backupState.ID
-	} else {
-		// Create new state
-		a.backupState = &BackupState{
-			ID:             backupID,
-			Status:         "running",
-			Config:         *config,
-			StartTime:      time.Now(),
-			LastUpdateTime: time.Now(),
-			ProcessedFiles: make(map[string]bool),
-		}
+	fmt.Fprintf(os.Stderr, "DEBUG: Verifying backup state exists with ID=%s\n", backupID)
+	if a.backupState == nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: ERROR: Backup state is nil!\n")
+		wailsruntime.EventsEmit(a.ctx, "app:log", "Error: Backup state not initialized")
+		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
+		a.backupMutex.Unlock()
+		return
 	}
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: About to release backup mutex lock\n")
 	a.backupMutex.Unlock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Released backup mutex lock\n")
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: About to emit events\n")
 	wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Backup process started (ID: %s)...", backupID))
 	wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Running")
+	fmt.Fprintf(os.Stderr, "DEBUG: Events emitted\n")
 
 	// Basic validation
+	fmt.Fprintf(os.Stderr, "DEBUG: Starting validation\n")
 	if config.DestinationPath == "" {
+		fmt.Fprintf(os.Stderr, "DEBUG: Destination path is empty\n")
 		wailsruntime.EventsEmit(a.ctx, "app:log", "Error: Backup destination not set.")
 		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
 		return
 	}
 	if len(config.SourcePaths) == 0 {
+		fmt.Fprintf(os.Stderr, "DEBUG: No source paths provided\n")
 		wailsruntime.EventsEmit(a.ctx, "app:log", "Error: No source paths selected for backup.")
 		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
 		return
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Validation passed, about to create directory\n")
 
-	// Ensure the CAS root exists
-	if err := os.MkdirAll(config.DestinationPath, 0755); err != nil {
-		wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Error creating CAS base directory: %s", err.Error()))
+	// Ensure the CAS root exists with timeout
+	fmt.Fprintf(os.Stderr, "DEBUG: About to create directory: %s\n", config.DestinationPath)
+	
+	// Use a goroutine to implement timeout for directory creation
+	type mkdirResult struct {
+		err error
+	}
+	
+	resultChan := make(chan mkdirResult, 1)
+	go func() {
+		err := os.MkdirAll(config.DestinationPath, 0755)
+		resultChan <- mkdirResult{err: err}
+	}()
+	
+	// Wait for result with timeout
+	select {
+	case result := <-resultChan:
+		if result.err != nil {
+			wailsruntime.EventsEmit(a.ctx, "app:log", fmt.Sprintf("Error creating CAS base directory: %s", result.err.Error()))
+			wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Directory created successfully\n")
+	case <-time.After(10 * time.Second):
+		wailsruntime.EventsEmit(a.ctx, "app:log", "Timeout creating CAS base directory - network volume may be unavailable")
 		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Failed")
 		return
 	}
 
 	// Create a context for cancellation
+	fmt.Fprintf(os.Stderr, "DEBUG: About to create backup context\n")
 	backupCtx, cancel := context.WithCancel(a.ctx)
+	fmt.Fprintf(os.Stderr, "DEBUG: Backup context created\n")
 	
 	// Store cancel function for stop/pause operations
+	fmt.Fprintf(os.Stderr, "DEBUG: About to store cancel function\n")
 	a.backupMutex.Lock()
 	a.backupCancel = cancel
 	a.backupMutex.Unlock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Cancel function stored\n")
 
 	defer func() {
+		fmt.Fprintf(os.Stderr, "DEBUG: Defer function called - cleaning up cancel\n")
 		a.backupMutex.Lock()
 		a.backupCancel = nil
 		a.backupMutex.Unlock()
 	}()
 
 	// Progress callback function with state tracking
+	fmt.Fprintf(os.Stderr, "DEBUG: About to create progress callback\n")
 	progressCb := func(progress backend.BackupProgress) {
 		// Check if backup was cancelled before processing progress
 		a.backupMutex.RLock()
@@ -448,7 +505,9 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 		a.backupMutex.Unlock()
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: About to call backend.RunBackup\n")
 	err := backend.RunBackup(backupCtx, config.DestinationPath, config.SourcePaths, config.IgnorePatterns, progressCb)
+	fmt.Fprintf(os.Stderr, "DEBUG: backend.RunBackup returned with err=%v\n", err)
 	
 	// Update final state
 	a.backupMutex.Lock()

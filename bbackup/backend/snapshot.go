@@ -41,18 +41,24 @@ func snapshotFilePath(casBaseDir, snapshotID string) string {
 // LoadLatestSnapshot finds and loads the most recent snapshot from the backup destination.
 // Returns nil, nil if no snapshots are found.
 func LoadLatestSnapshot(casBaseDir string) (*Snapshot, error) {
+	fmt.Fprintf(os.Stderr, "DEBUG: LoadLatestSnapshot started with casBaseDir=%s\n", casBaseDir)
 	snapDir := snapshotsDir(casBaseDir)
+	fmt.Fprintf(os.Stderr, "DEBUG: snapDir=%s\n", snapDir)
 	
 	// Check if directory exists before trying to read it
+	fmt.Fprintf(os.Stderr, "DEBUG: About to stat snapshots directory\n")
 	if stat, err := os.Stat(snapDir); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "DEBUG: Snapshots directory does not exist, returning nil\n")
 		return nil, nil // No snapshots directory, so no snapshots
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to access snapshots directory %s: %w", snapDir, err)
 	} else if !stat.IsDir() {
 		return nil, fmt.Errorf("snapshots path %s exists but is not a directory", snapDir)
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Snapshots directory exists and is valid\n")
 	
 	// Open directory with a file handle to ensure it's readable
+	fmt.Fprintf(os.Stderr, "DEBUG: About to open snapshots directory\n")
 	dir, err := os.Open(snapDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open snapshots directory %s: %w", snapDir, err)
@@ -60,21 +66,31 @@ func LoadLatestSnapshot(casBaseDir string) (*Snapshot, error) {
 	defer dir.Close()
 	
 	// Read directory entries
-	entries, err := dir.Readdirnames(-1)
+	fmt.Fprintf(os.Stderr, "DEBUG: About to read directory entries\n")
+	fileInfos, err := dir.Readdir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read snapshots directory entries %s: %w", snapDir, err)
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Read %d directory entries\n", len(fileInfos))
 
 	var latestSnapshotID string
 	var latestTime time.Time
 
-	// Sort entries to find the latest snapshot by name (assuming timestamp-based names)
-	sort.Strings(entries)
-
-	for _, entryName := range entries {
-		if !strings.HasSuffix(entryName, ".json") {
+	var validEntries []fs.FileInfo
+	for _, info := range fileInfos {
+		if !strings.HasSuffix(info.Name(), ".json") {
 			continue
 		}
+		validEntries = append(validEntries, info)
+	}
+
+	// Sort entries to find the latest snapshot by name (assuming timestamp-based names)
+	sort.Slice(validEntries, func(i, j int) bool {
+		return validEntries[i].Name() > validEntries[j].Name() // Descending order
+	})
+
+	for _, info := range validEntries {
+		entryName := info.Name()
 		
 		id := strings.TrimSuffix(entryName, ".json")
 		t, err := time.Parse("20060102150405", id) // Expecting format YYYYMMDDhhmmss

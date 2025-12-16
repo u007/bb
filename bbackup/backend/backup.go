@@ -51,7 +51,10 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 	// 1. Load the latest snapshot
 	currentProgress.Status = "Loading previous snapshot..."
 	updateProgress()
+	
+	fmt.Fprintf(os.Stderr, "DEBUG: About to load latest snapshot from %s\n", casBaseDir)
 	latestSnapshot, err := LoadLatestSnapshot(casBaseDir)
+	fmt.Fprintf(os.Stderr, "DEBUG: LoadLatestSnapshot returned: err=%v, snapshot=%p\n", err, latestSnapshot)
 	if err != nil {
 		// If snapshot loading fails, log warning but continue with no previous snapshot
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load latest snapshot, starting fresh backup: %v\n", err)
@@ -60,11 +63,13 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 		updateProgress()
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating new snapshot\n")
 	newSnapshot := &Snapshot{
 		Timestamp: time.Now(),
 		Source:    sourcePaths,
 		Files:     make(map[string]*FileEntry),
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: New snapshot created, about to start file processing\n")
 
 	fileCount := 0
 	// First pass: count files and estimate total size (optional, for more accurate progress)
@@ -72,7 +77,9 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 	// A more robust solution might do a pre-scan to get TotalFiles and TotalBytes.
 
 	// For each source path, walk through files and process them
-	for _, sourcePath := range sourcePaths {
+	fmt.Fprintf(os.Stderr, "DEBUG: Starting to process %d source paths\n", len(sourcePaths))
+	for i, sourcePath := range sourcePaths {
+		fmt.Fprintf(os.Stderr, "DEBUG: Processing source path %d: %s\n", i, sourcePath)
 		absSourcePath, err := filepath.Abs(sourcePath)
 		if err != nil {
 			currentProgress.Status = "Failed"
@@ -80,11 +87,19 @@ func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ign
 			updateProgress()
 			return fmt.Errorf("failed to get absolute path for source %s: %w", sourcePath, err)
 		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Absolute path: %s\n", absSourcePath)
 
 		currentProgress.Status = fmt.Sprintf("Scanning %s...", filepath.Base(sourcePath))
 		updateProgress()
 		
+		fmt.Fprintf(os.Stderr, "DEBUG: About to start WalkDir\n")
+		filesWalked := 0
 		err = filepath.WalkDir(absSourcePath, func(path string, d fs.DirEntry, err error) error {
+			filesWalked++
+			if filesWalked%10 == 0 {
+				fmt.Fprintf(os.Stderr, "DEBUG: WalkDir has processed %d files, current path: %s\n", filesWalked, path)
+			}
+			
 			// Check for context cancellation more frequently
 			select {
 			case <-ctx.Done():
