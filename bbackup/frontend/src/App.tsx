@@ -50,6 +50,9 @@ function BackupApp() {
     const [logOutput, setLogOutput] = useState<string[]>([]);
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const [progress, setProgress] = useState<BackupProgress | null>(null);
+    const [canPause, setCanPause] = useState<boolean>(false);
+    const [canStop, setCanStop] = useState<boolean>(false);
+    const [canResume, setCanResume] = useState<boolean>(false);
 
     // Load initial data and set up event listeners
     useEffect(() => {
@@ -71,9 +74,29 @@ function BackupApp() {
 
         EventsOn('app:backup:status', (status: string) => {
             setBackupStatus(status);
-            if (status === 'Completed' || status === 'Failed' || status === 'Cancelled') {
+            
+            // Update control states based on backup status
+            if (status === 'Running') {
+                setIsProcessing(true);
+                setCanPause(true);
+                setCanStop(true);
+                setCanResume(false);
+            } else if (status === 'Paused') {
+                setIsProcessing(false);
+                setCanPause(false);
+                setCanStop(true);
+                setCanResume(true);
+            } else if (status === 'Stopped') {
+                setIsProcessing(false);
+                setCanPause(false);
+                setCanStop(false);
+                setCanResume(true);
+            } else if (status === 'Completed' || status === 'Failed' || status === 'Cancelled') {
                 setIsProcessing(false);
                 setProgress(null);
+                setCanPause(false);
+                setCanStop(false);
+                setCanResume(false);
                 
                 // Update last backup time for the running backup
                 if (status === 'Completed') {
@@ -104,11 +127,20 @@ function BackupApp() {
             }
         });
 
+        // Listen for resumable backup notifications
+        EventsOn('app:backup:resumable', (message: string) => {
+            addLog(message);
+            if (confirm('Found an interrupted backup. Would you like to resume it?')) {
+                handleResumeBackup();
+            }
+        });
+
         // Cleanup event listeners on component unmount
         return () => {
             EventsOff('app:log');
             EventsOff('app:backup:status');
             EventsOff('app:backup:progress');
+            EventsOff('app:backup:resumable');
         };
     }, []);
 
@@ -148,7 +180,7 @@ function BackupApp() {
             });
         };
 
-        const shouldRunHourly = (now: Date, lastBackup: string): boolean => {
+        const shouldRunHourly = (now: Date, lastBackup?: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -156,7 +188,7 @@ function BackupApp() {
             return hoursSinceLastBackup >= 1;
         };
 
-        const shouldRunDaily = (now: Date, lastBackup: string): boolean => {
+        const shouldRunDaily = (now: Date, lastBackup?: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -164,7 +196,7 @@ function BackupApp() {
             return daysSinceLastBackup >= 1;
         };
 
-        const shouldRunWeekly = (now: Date, lastBackup: string): boolean => {
+        const shouldRunWeekly = (now: Date, lastBackup?: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -172,7 +204,7 @@ function BackupApp() {
             return weeksSinceLastBackup >= 1;
         };
 
-        const shouldRunMonthly = (now: Date, lastBackup: string): boolean => {
+        const shouldRunMonthly = (now: Date, lastBackup?: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -254,6 +286,9 @@ function BackupApp() {
         }
 
         setIsProcessing(true);
+        setCanPause(true);
+        setCanStop(true);
+        setCanResume(false);
         setBackupStatus(`Running backup: ${backup.name}`);
         addLog(`Starting backup: ${backup.name}`);
         setProgress(null);
@@ -262,8 +297,69 @@ function BackupApp() {
             console.error("Error initiating backup:", err);
             addLog(`Error initiating backup: ${err}`);
             setIsProcessing(false);
+            setCanPause(false);
+            setCanStop(false);
+            setCanResume(false);
             setBackupStatus('Failed');
         });
+    };
+
+    // Backup control functions
+    const handlePauseBackup = async () => {
+        try {
+            await App.PauseBackup();
+            addLog('Backup paused');
+        } catch (err: any) {
+            addLog(`Error pausing backup: ${err}`);
+            console.error("Error pausing backup:", err);
+        }
+    };
+
+    const handleStopBackup = async () => {
+        try {
+            await App.StopBackup();
+            addLog('Backup stopped');
+        } catch (err: any) {
+            addLog(`Error stopping backup: ${err}`);
+            console.error("Error stopping backup:", err);
+        }
+    };
+
+    const handleResumeBackup = async () => {
+        try {
+            await App.ResumeBackup();
+            addLog('Resuming backup...');
+        } catch (err: any) {
+            addLog(`Error resuming backup: ${err}`);
+            console.error("Error resuming backup:", err);
+        }
+    };
+
+    const handleRestartBackup = async (backup: BackupConfig) => {
+        if (backup.sourcePaths.length === 0) {
+            addLog('Error: No source paths selected for this backup.');
+            return;
+        }
+        if (!backup.destinationPath) {
+            addLog('Error: Backup destination is not set.');
+            return;
+        }
+
+        try {
+            const config = {
+                id: Date.now().toString(),
+                name: backup.name,
+                sourcePaths: backup.sourcePaths,
+                destinationPath: backup.destinationPath,
+                ignorePatterns: backup.ignorePatterns
+            };
+            
+            await App.RestartBackup(config);
+            addLog(`Restarting backup: ${backup.name}`);
+        } catch (err: any) {
+            addLog(`Error restarting backup: ${err}`);
+            console.error("Error restarting backup:", err);
+        }
     };
 
     // Form handling functions
@@ -407,77 +503,84 @@ function BackupApp() {
     };
 
     return (
-        <div id="app-container">
-            <h1>Backup Manager</h1>
+        <div className="flex flex-col max-w-2xl mx-5 my-5 p-5 bg-white rounded-lg shadow-lg md:mx-auto md:my-5 md:p-5 lg:max-w-2xl xl:max-w-2xl">
+            <h1 className="text-3xl font-bold text-center text-slate-700 mb-8">Backup Manager</h1>
 
             {/* Main backup list view */}
             {!showCreateForm && !showEditForm && (
                 <>
-                    <section className="section-container">
-                        <div className="section-header">
-                            <h2>Backup Configurations</h2>
-                            <button onClick={handleCreateBackup} className="primary-button">Create New Backup</button>
+                    <section className="mb-6 p-4 border border-gray-300 rounded-md bg-gray-50">
+                        <div className="flex justify-between items-center mb-5">
+                            <h2 className="text-xl font-semibold text-slate-600 mt-0 border-b border-gray-200 pb-2.5 mb-4">Backup Configurations</h2>
+                            <button onClick={handleCreateBackup} className="bg-green-600 hover:bg-green-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Create New Backup</button>
                         </div>
                         
                         {backups.length === 0 ? (
-                            <div className="empty-state">
-                                <p>No backup configurations yet.</p>
+                            <div className="text-center py-10 px-5 text-gray-600 bg-gray-100 rounded-md border-2 border-dashed border-gray-300">
+                                <p className="mb-2">No backup configurations yet.</p>
                                 <p>Click "Create New Backup" to get started.</p>
                             </div>
                         ) : (
-                            <div className="backup-list">
+                            <div className="flex flex-col gap-4">
                                 {backups.map(backup => (
-                                    <div key={backup.id} className={`backup-item ${backup.enabled ? 'enabled' : 'disabled'}`}>
-                                        <div className="backup-header">
-                                            <h3>{backup.name}</h3>
-                                            <div className="backup-status">
-                                                <span className={`status-indicator ${backup.enabled ? 'enabled' : 'disabled'}`}>
+                                    <div key={backup.id} className={`border border-gray-300 rounded-lg p-5 bg-white transition-all duration-200 hover:shadow-md hover:border-blue-500 ${backup.enabled ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-red-500 opacity-70'}`}>
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h3 className="m-0 text-slate-700 text-lg font-semibold">{backup.name}</h3>
+                                            <div className="flex gap-2.5 items-center">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${backup.enabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                                                     {backup.enabled ? 'Enabled' : 'Disabled'}
                                                 </span>
-                                                <span className="schedule-info">{backup.schedule}</span>
+                                                <span className="bg-blue-100 text-blue-900 px-2 py-1 rounded-full text-xs font-bold">{backup.schedule}</span>
                                             </div>
                                         </div>
                                         
-                                        <div className="backup-details">
-                                            <div className="detail-row">
-                                                <strong>Source:</strong>
+                                        <div className="mb-4">
+                                            <div className="flex mb-1.5 gap-2.5">
+                                                <strong className="min-w-[100px] text-gray-600">Source:</strong>
                                                 <span>{backup.sourcePaths.length > 0 ? `${backup.sourcePaths.length} directories` : 'None'}</span>
                                             </div>
-                                            <div className="detail-row">
-                                                <strong>Destination:</strong>
+                                            <div className="flex mb-1.5 gap-2.5">
+                                                <strong className="min-w-[100px] text-gray-600">Destination:</strong>
                                                 <span>{backup.destinationPath || 'Not set'}</span>
                                             </div>
                                             {backup.lastBackup && (
-                                                <div className="detail-row">
-                                                    <strong>Last Backup:</strong>
+                                                <div className="flex mb-1.5 gap-2.5">
+                                                    <strong className="min-w-[100px] text-gray-600">Last Backup:</strong>
                                                     <span>{backup.lastBackup}</span>
                                                 </div>
                                             )}
                                         </div>
 
-                                        <div className="backup-actions">
+                                        <div className="flex gap-2 flex-wrap">
                                             <button
                                                 onClick={() => handleRunBackup(backup)}
                                                 disabled={!backup.enabled || isProcessing}
-                                                className="run-button"
+                                                className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
                                             >
                                                 Run Now
                                             </button>
                                             <button
+                                                onClick={() => handleRestartBackup(backup)}
+                                                disabled={!backup.enabled || isProcessing}
+                                                className="bg-orange-600 hover:bg-orange-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
+                                            >
+                                                🔄 Restart
+                                            </button>
+                                            <button
                                                 onClick={() => handleToggleBackup(backup.id)}
-                                                className={backup.enabled ? 'disable-button' : 'enable-button'}
+                                                className={backup.enabled ? 'bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed'}
                                             >
                                                 {backup.enabled ? 'Disable' : 'Enable'}
                                             </button>
                                             <button
                                                 onClick={() => handleEditBackup(backup)}
-                                                className="edit-button"
+                                                className="bg-cyan-600 hover:bg-cyan-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
                                             >
                                                 Edit
                                             </button>
                                             <button
                                                 onClick={() => handleDeleteBackup(backup.id)}
-                                                className="delete-button"
+                                                className="bg-red-600 hover:bg-red-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
                                             >
                                                 Delete
                                             </button>
@@ -489,33 +592,66 @@ function BackupApp() {
                     </section>
 
                     {/* Status and Log Section */}
-                    <section className="section-container">
-                        <h2>Status & Logs</h2>
-                        <div className="status-display">
-                            <p>
-                                Current Status: <strong>{backupStatus}</strong>
+                    <section className="mb-6 p-4 border border-gray-300 rounded-md bg-gray-50">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-xl font-semibold text-slate-600 mt-0 border-b border-gray-200 pb-2.5">Status & Logs</h2>
+                            
+                            {/* Backup Control Buttons */}
+                            {(canPause || canStop || canResume) && (
+                                <div className="flex gap-2">
+                                    {canPause && (
+                                        <button
+                                            onClick={handlePauseBackup}
+                                            className="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-medium py-2 px-4 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
+                                        >
+                                            ⏸ Pause
+                                        </button>
+                                    )}
+                                    {canStop && (
+                                        <button
+                                            onClick={handleStopBackup}
+                                            className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
+                                        >
+                                            ⏹ Stop
+                                        </button>
+                                    )}
+                                    {canResume && (
+                                        <button
+                                            onClick={handleResumeBackup}
+                                            className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed"
+                                        >
+                                            ▶ Resume
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        
+                        <div className="bg-gray-100 p-4 rounded-md border-l-4 border-l-blue-500 mb-5">
+                            <p className="text-gray-700">
+                                Current Status: <strong className="font-semibold">{backupStatus}</strong>
                                 {progress && (
                                     <>
-                                        <br />Files: {progress.filesProcessed}/{progress.totalFiles}
-                                        {progress.currentFile && <br />}
+                                        <br className="leading-relaxed" />Files: {progress.filesProcessed}/{progress.totalFiles}
+                                        {progress.currentFile && <br className="leading-relaxed" />}
                                         {progress.currentFile && `Processing: ${progress.currentFile}`}
-                                        {progress.status && <br />}
+                                        {progress.status && <br className="leading-relaxed" />}
                                         {progress.status && `Detail: ${progress.status}`}
-                                        {progress.error && <br />}
+                                        {progress.error && <br className="leading-relaxed" />}
                                         {progress.error && `Error: ${progress.error}`}
                                     </>
                                 )}
                             </p>
                         </div>
                         
-                        <div className="log-output">
-                            <h3>Activity Log</h3>
-                            <div className="log-container">
+                        <div className="mt-5 bg-gray-800 text-green-400 font-mono p-4 rounded-md max-h-[250px] overflow-y-auto text-sm leading-tight whitespace-pre-wrap">
+                            <h3 className="text-green-500 mt-0 mb-2.5 border-b border-green-900 pb-1.5">Activity Log</h3>
+                            <div className="max-h-[300px] overflow-y-auto overflow-x-hidden bg-gray-800 text-green-400 font-mono p-4 rounded-md text-sm leading-tight text-left whitespace-pre-wrap break-all">
                                 {logOutput.length === 0 ? (
-                                    <p className="empty-log">No activity yet.</p>
+                                    <p className="text-gray-500 italic text-center py-5">No activity yet.</p>
                                 ) : (
                                     logOutput.slice(-50).map((line, index) => (
-                                        <div key={index} className="log-line">{line}</div>
+                                        <div key={index} className="mb-0.5 break-words text-left">{line}</div>
                                     ))
                                 )}
                             </div>
@@ -526,27 +662,29 @@ function BackupApp() {
 
             {/* Create/Edit Backup Form */}
             {(showCreateForm || showEditForm) && (
-                <section className="section-container">
-                    <h2>{showEditForm ? 'Edit Backup Configuration' : 'Create New Backup Configuration'}</h2>
+                <section className="mb-6 p-4 border border-gray-300 rounded-md bg-gray-50">
+                    <h2 className="text-xl font-semibold text-slate-600 mt-0 border-b border-gray-200 pb-2.5 mb-4">{showEditForm ? 'Edit Backup Configuration' : 'Create New Backup Configuration'}</h2>
                     
-                    <div className="form-section">
-                        <div className="form-group">
-                            <label htmlFor="backup-name">Backup Name:</label>
+                    <div className="mb-6 p-5 bg-gray-100 rounded-md border border-gray-200">
+                        <div className="mb-5">
+                            <label htmlFor="backup-name" className="block mb-1.5 font-bold text-gray-700">Backup Name:</label>
                             <input
                                 id="backup-name"
                                 type="text"
                                 value={formBackupName}
                                 onChange={(e) => setFormBackupName(e.target.value)}
                                 placeholder="e.g., Documents Backup"
+                                className="w-full p-2.5 border border-gray-300 rounded-md text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             />
                         </div>
 
-                        <div className="form-group">
-                            <label htmlFor="schedule">Schedule:</label>
+                        <div className="mb-5">
+                            <label htmlFor="schedule" className="block mb-1.5 font-bold text-gray-700">Schedule:</label>
                             <select
                                 id="schedule"
                                 value={formSchedule}
                                 onChange={(e) => setFormSchedule(e.target.value)}
+                                className="w-full p-2.5 border border-gray-300 rounded-md text-base bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             >
                                 <option value="manual">Manual Only</option>
                                 <option value="hourly">Hourly</option>
@@ -556,17 +694,17 @@ function BackupApp() {
                             </select>
                         </div>
 
-                        <div className="form-section">
-                            <h3>Source Directories</h3>
-                            <div className="list-container">
+                        <div className="mb-6 p-5 bg-gray-100 rounded-md border border-gray-200">
+                            <h3 className="mt-0 mb-4 text-gray-700 border-b border-gray-300 pb-2">Source Directories</h3>
+                            <div className="min-h-[50px] max-h-[200px] overflow-y-auto border border-gray-300 rounded-md p-2.5 bg-gray-50">
                                 {formSourcePaths.length === 0 ? (
-                                    <p>No source directories added yet.</p>
+                                    <p className="text-gray-600">No source directories added yet.</p>
                                 ) : (
-                                    <ul>
+                                    <ul className="list-none p-0 m-0">
                                         {formSourcePaths.map((path, index) => (
                                             <li
                                                 key={path}
-                                                className={selectedSourceIndex === index ? 'selected' : ''}
+                                                className={`p-2 mb-1.5 bg-white border rounded-md cursor-pointer transition-colors duration-200 break-words ${selectedSourceIndex === index ? 'bg-blue-50 border-blue-500 font-bold' : 'border-gray-200 hover:bg-gray-100'}`}
                                                 onClick={() => setSelectedSourceIndex(index)}
                                             >
                                                 {path}
@@ -575,24 +713,24 @@ function BackupApp() {
                                     </ul>
                                 )}
                             </div>
-                            <div className="button-group">
-                                <button onClick={handleFormAddSourcePath}>Add Source</button>
-                                <button onClick={handleLoadCommonPaths}>Common Paths</button>
-                                <button onClick={handleFormRemoveSourcePath} disabled={selectedSourceIndex === null}>Remove Selected</button>
+                            <div className="flex gap-2.5 mt-4">
+                                <button onClick={handleFormAddSourcePath} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Add Source</button>
+                                <button onClick={handleLoadCommonPaths} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Common Paths</button>
+                                <button onClick={handleFormRemoveSourcePath} disabled={selectedSourceIndex === null} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Remove Selected</button>
                             </div>
                         </div>
 
-                        <div className="form-section">
-                            <h3>Ignore Patterns</h3>
-                            <div className="list-container">
+                        <div className="mb-6 p-5 bg-gray-100 rounded-md border border-gray-200">
+                            <h3 className="mt-0 mb-4 text-gray-700 border-b border-gray-300 pb-2">Ignore Patterns</h3>
+                            <div className="min-h-[50px] max-h-[200px] overflow-y-auto border border-gray-300 rounded-md p-2.5 bg-gray-50">
                                 {formIgnorePatterns.length === 0 ? (
-                                    <p>No ignore patterns defined.</p>
+                                    <p className="text-gray-600">No ignore patterns defined.</p>
                                 ) : (
-                                    <ul>
+                                    <ul className="list-none p-0 m-0">
                                         {formIgnorePatterns.map((pattern, index) => (
                                             <li
                                                 key={pattern}
-                                                className={selectedIgnoreIndex === index ? 'selected' : ''}
+                                                className={`p-2 mb-1.5 bg-white border rounded-md cursor-pointer transition-colors duration-200 break-words ${selectedIgnoreIndex === index ? 'bg-blue-50 border-blue-500 font-bold' : 'border-gray-200 hover:bg-gray-100'}`}
                                                 onClick={() => setSelectedIgnoreIndex(index)}
                                             >
                                                 {pattern}
@@ -601,31 +739,31 @@ function BackupApp() {
                                     </ul>
                                 )}
                             </div>
-                            <div className="button-group">
-                                <button onClick={handleFormAddIgnorePattern}>Add Pattern</button>
-                                <button onClick={handleFormRemoveIgnorePattern} disabled={selectedIgnoreIndex === null}>Remove Selected</button>
-                                <button onClick={handleFormProposeIgnores}>Propose Defaults</button>
+                            <div className="flex gap-2.5 mt-4">
+                                <button onClick={handleFormAddIgnorePattern} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Add Pattern</button>
+                                <button onClick={handleFormRemoveIgnorePattern} disabled={selectedIgnoreIndex === null} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Remove Selected</button>
+                                <button onClick={handleFormProposeIgnores} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Propose Defaults</button>
                             </div>
                         </div>
 
-                        <div className="form-section">
-                            <h3>Backup Destination</h3>
-                            <div className="input-group">
+                        <div className="mb-6 p-5 bg-gray-100 rounded-md border border-gray-200">
+                            <h3 className="mt-0 mb-4 text-gray-700 border-b border-gray-300 pb-2">Backup Destination</h3>
+                            <div className="flex gap-2.5 mt-4 items-center">
                                 <input
                                     type="text"
                                     value={formDestinationPath || 'No destination selected'}
                                     readOnly
-                                    className="destination-input"
+                                    className="flex-grow p-2.5 border border-gray-300 rounded-md text-base bg-gray-50 cursor-default"
                                 />
-                                <button onClick={handleFormSelectDestination}>Select Destination</button>
+                                <button onClick={handleFormSelectDestination} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Select Destination</button>
                             </div>
                         </div>
 
-                        <div className="form-actions">
-                            <button onClick={handleSaveBackup} className="save-button">
+                        <div className="flex gap-2.5 justify-end pt-5 border-t border-gray-300">
+                            <button onClick={handleSaveBackup} className="bg-green-600 hover:bg-green-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">
                                 {showEditForm ? 'Update Backup' : 'Create Backup'}
                             </button>
-                            <button onClick={handleCancelForm} className="cancel-button">Cancel</button>
+                            <button onClick={handleCancelForm} className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed">Cancel</button>
                         </div>
                     </div>
                 </section>
@@ -633,22 +771,22 @@ function BackupApp() {
 
             {/* Common Paths Modal */}
             {showCommonPaths && (
-                <div className="modal-overlay" onClick={() => setShowCommonPaths(false)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>Common Backup Paths</h3>
-                            <button className="modal-close" onClick={() => setShowCommonPaths(false)}>&times;</button>
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50" onClick={() => setShowCommonPaths(false)}>
+                    <div className="bg-white rounded-lg shadow-xl max-w-md w-[90%] max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-between items-center p-4 p-5 border-b border-gray-300">
+                            <h3 className="m-0 text-slate-700 text-lg font-semibold">Common Backup Paths</h3>
+                            <button className="bg-transparent border-none text-2xl cursor-pointer text-gray-600 p-0 w-[30px] h-[30px] flex items-center justify-center hover:text-gray-800" onClick={() => setShowCommonPaths(false)}>&times;</button>
                         </div>
-                        <div className="modal-body">
+                        <div className="p-5 overflow-y-auto flex-1">
                             {commonPaths.length === 0 ? (
-                                <p>No common paths found.</p>
+                                <p className="text-gray-600">No common paths found.</p>
                             ) : (
-                                <ul className="common-paths-list">
+                                <ul className="list-none p-0 m-0">
                                     {commonPaths.map((path, index) => (
-                                        <li key={index} className="common-path-item">
-                                            <span className="path-text">{path}</span>
+                                        <li key={index} className="flex justify-between items-center py-2.5 border-b border-gray-200 last:border-b-0">
+                                            <span className="flex-1 font-mono text-sm text-gray-700 mr-4 break-all">{path}</span>
                                             <button 
-                                                className="add-path-button"
+                                                className="bg-green-600 text-white border-none py-1.5 px-3 rounded-md cursor-pointer text-sm min-w-[60px] hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors duration-200"
                                                 onClick={() => handleAddCommonPath(path)}
                                                 disabled={formSourcePaths.includes(path)}
                                             >
@@ -659,8 +797,8 @@ function BackupApp() {
                                 </ul>
                             )}
                         </div>
-                        <div className="modal-footer">
-                            <button className="cancel-button" onClick={() => setShowCommonPaths(false)}>Close</button>
+                        <div className="p-4 p-5 border-t border-gray-300 flex justify-end">
+                            <button className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2.5 px-4.5 rounded-md transition-colors duration-200 disabled:bg-gray-400 disabled:opacity-70 disabled:cursor-not-allowed" onClick={() => setShowCommonPaths(false)}>Close</button>
                         </div>
                     </div>
                 </div>
