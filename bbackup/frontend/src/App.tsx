@@ -180,7 +180,7 @@ function BackupApp() {
             });
         };
 
-        const shouldRunHourly = (now: Date, lastBackup?: string): boolean => {
+        const shouldRunHourly = (now: Date, lastBackup: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -188,7 +188,7 @@ function BackupApp() {
             return hoursSinceLastBackup >= 1;
         };
 
-        const shouldRunDaily = (now: Date, lastBackup?: string): boolean => {
+        const shouldRunDaily = (now: Date, lastBackup: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -196,7 +196,7 @@ function BackupApp() {
             return daysSinceLastBackup >= 1;
         };
 
-        const shouldRunWeekly = (now: Date, lastBackup?: string): boolean => {
+        const shouldRunWeekly = (now: Date, lastBackup: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -204,7 +204,7 @@ function BackupApp() {
             return weeksSinceLastBackup >= 1;
         };
 
-        const shouldRunMonthly = (now: Date, lastBackup?: string): boolean => {
+        const shouldRunMonthly = (now: Date, lastBackup: string): boolean => {
             if (!lastBackup) return true;
             
             const last = new Date(lastBackup);
@@ -510,8 +510,8 @@ function BackupApp() {
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 relative overflow-hidden">
             <div className="pointer-events-none absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_20%_20%,rgba(59,130,246,0.25),transparent_35%),radial-gradient(circle_at_80%_0%,rgba(16,185,129,0.2),transparent_30%),radial-gradient(circle_at_50%_80%,rgba(236,72,153,0.2),transparent_30%)]" />
-            <div className="relative max-w-6xl mx-auto px-6 py-10">
-                <div className="glass w-full p-8 rounded-2xl shadow-2xl fade-in border border-white/10">
+            <div className="relative w-full">
+                <div className="glass w-full px-4 py-6 rounded-t-2xl shadow-2xl fade-in border border-white/10">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-8">
                         <div>
                             <h1 className="text-4xl font-bold text-white mb-2 flex items-center gap-3">
@@ -565,8 +565,8 @@ function BackupApp() {
 
             {/* Main backup list view */}
             {!showCreateForm && !showEditForm && (
-                <div className="grid gap-6 lg:grid-cols-3">
-                    <section className="lg:col-span-2 p-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in">
+                <div className="grid gap-6 grid-cols-1">
+                    <section className="px-4 py-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in">
                         <div className="flex justify-between items-center mb-6">
                             <h2 className="text-2xl font-semibold text-gray-800 flex items-center gap-2">
                                 <svg className="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -727,7 +727,7 @@ function BackupApp() {
                     </section>
 
                     {/* Status and Log Section */}
-                    <section className="p-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in lg:col-span-1">
+                    <section className="px-4 py-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in">
                         <div className="flex justify-between items-center mb-6">
                             <h2 className="text-2xl font-semibold text-gray-800 flex items-center gap-2">
                                 <svg className="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -877,7 +877,7 @@ function BackupApp() {
 
             {/* Create/Edit Backup Form */}
             {(showCreateForm || showEditForm) && (
-                <section className="mb-8 p-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in">
+                <section className="mb-8 px-4 py-6 bg-white/90 backdrop-blur rounded-xl border border-white/20 shadow-lg card fade-in">
                     <div className="flex items-center gap-3 mb-6">
                         <svg className="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -902,7 +902,7 @@ function BackupApp() {
                                     value={formBackupName}
                                     onChange={(e) => setFormBackupName(e.target.value)}
                                     placeholder="e.g., Documents Backup"
-                                    className="focus-ring w-full px-4 py-3 border border-gray-300 rounded-lg text-base transition-all duration-200 bg-white"
+                                    className="focus-ring w-full px-4 py-3 border border-gray-300 rounded-lg text-base transition-all duration-200 bg-white text-gray-900"
                                 />
                             </div>
 
@@ -917,7 +917,7 @@ function BackupApp() {
                                     id="schedule"
                                     value={formSchedule}
                                     onChange={(e) => setFormSchedule(e.target.value)}
-                                    className="focus-ring w-full px-4 py-3 border border-gray-300 rounded-lg text-base bg-white transition-all duration-200"
+                                    className="focus-ring w-full px-4 py-3 border border-gray-300 rounded-lg text-base bg-white text-gray-900 transition-all duration-200"
                                 >
                                     <option value="manual">Manual Only</option>
                                     <option value="hourly">Hourly</option>
@@ -948,15 +948,16 @@ function BackupApp() {
                                             {formSourcePaths.map((path, index) => (
                                                 <li
                                                     key={path}
-                                                    className={`p-3 bg-white border-2 rounded-lg cursor-pointer transition-all duration-200 break-all flex items-center gap-3 ${
+                                                    className={`p-3 bg-white border-2 rounded-lg cursor-pointer transition-all duration-200 break-all flex items-center gap-3 text-gray-900 ${
                                                         selectedSourceIndex === index 
                                                             ? 'border-primary-500 bg-primary-50 font-medium shadow-sm' 
                                                             : 'border-gray-200 hover:border-primary-300 hover:bg-gray-50'
                                                     }`}
                                                     onClick={() => setSelectedSourceIndex(index)}
                                                 >
-                                                    <svg className="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                                    <svg className="w-4 h-4 text-primary-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                                                        <path stroke="currentColor" strokeWidth={1} d="M4 9v3a1 1 0 001 1h8a1 1 0 001-1V9a1 1 0 00-1-1H5a1 1 0 00-1 1z" fill="none" />
                                                     </svg>
                                                     {path}
                                                 </li>
@@ -1017,7 +1018,7 @@ function BackupApp() {
                                             {formIgnorePatterns.map((pattern, index) => (
                                                 <li
                                                     key={pattern}
-                                                    className={`p-3 bg-white border-2 rounded-lg cursor-pointer transition-all duration-200 break-all flex items-center gap-3 ${
+                                                    className={`p-3 bg-white border-2 rounded-lg cursor-pointer transition-all duration-200 break-all flex items-center gap-3 text-gray-900 ${
                                                         selectedIgnoreIndex === index 
                                                             ? 'border-amber-500 bg-amber-50 font-medium shadow-sm' 
                                                             : 'border-gray-200 hover:border-amber-300 hover:bg-gray-50'
@@ -1067,8 +1068,9 @@ function BackupApp() {
 
                             <div className="mb-6 bg-white p-6 rounded-xl border border-gray-200">
                                 <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                                    <svg className="w-5 h-5 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                    <svg className="w-5 h-5 text-primary-600" fill="currentColor" viewBox="0 0 20 20">
+                                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                                        <path stroke="currentColor" strokeWidth={1} d="M4 9v3a1 1 0 001 1h8a1 1 0 001-1V9a1 1 0 00-1-1H5a1 1 0 00-1 1z" fill="none" />
                                     </svg>
                                     Backup Destination
                                 </h3>
@@ -1078,7 +1080,7 @@ function BackupApp() {
                                             type="text"
                                             value={formDestinationPath || 'No destination selected'}
                                             readOnly
-                                            className="focus-ring w-full px-4 py-3 pr-10 border border-gray-300 rounded-lg text-base bg-gray-50 cursor-not-allowed"
+                                            className="focus-ring w-full px-4 py-3 pr-10 border border-gray-300 rounded-lg text-base bg-gray-50 text-gray-700 cursor-not-allowed"
                                         />
                                         <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
                                             {formDestinationPath ? (
@@ -1171,8 +1173,9 @@ function BackupApp() {
                                                 className="flex justify-between items-center p-4 bg-gray-50 border-2 border-gray-200 rounded-xl hover:border-primary-300 hover:bg-primary-50 transition-all duration-200 group"
                                             >
                                                 <div className="flex items-center gap-3 flex-1 min-w-0">
-                                                    <svg className="w-5 h-5 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                                    <svg className="w-5 h-5 text-primary-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                                                        <path stroke="currentColor" strokeWidth={1} d="M4 9v3a1 1 0 001 1h8a1 1 0 001-1V9a1 1 0 00-1-1H5a1 1 0 00-1 1z" fill="none" />
                                                     </svg>
                                                     <span className="font-mono text-sm text-gray-700 break-all">{path}</span>
                                                 </div>
