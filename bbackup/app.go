@@ -73,9 +73,17 @@ func (a *App) startup(ctx context.Context) {
 
 // eventEmitter runs in a separate goroutine and emits queued events
 func (a *App) eventEmitter() {
+	fmt.Fprintf(os.Stderr, "DEBUG: Event emitter goroutine started\n")
 	for msg := range a.eventQueue {
-		a.emitEvent(msg.name, msg.data)
+		if a.ctx == nil {
+			fmt.Fprintf(os.Stderr, "WARNING: Context not initialized, skipping event: %s\n", msg.name)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Emitting event: %s\n", msg.name)
+		wailsruntime.EventsEmit(a.ctx, msg.name, msg.data)
+		fmt.Fprintf(os.Stderr, "DEBUG: Event emitted: %s\n", msg.name)
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Event emitter goroutine exited\n")
 }
 
 // emitEvent queues an event for emission (non-blocking)
@@ -532,10 +540,22 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 		
 		// Save state periodically
 		a.backupMutex.Lock()
+		var stateToCopy *BackupState
 		if a.backupState != nil {
-			a.saveBackupState()
+			// Make a copy while holding the lock
+			copy := *a.backupState
+			stateToCopy = &copy
 		}
 		a.backupMutex.Unlock()
+		
+		// Save outside the mutex to avoid deadlock
+		if stateToCopy != nil {
+			stateFile := filepath.Join(stateToCopy.Config.DestinationPath, ".backup_state.json")
+			data, err := json.MarshalIndent(stateToCopy, "", "  ")
+			if err == nil {
+				os.WriteFile(stateFile, data, 0644)
+			}
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "DEBUG: About to call backend.RunBackup\n")
