@@ -395,23 +395,53 @@ function BackupApp() {
     };
 
     const handleStopBackup = async () => {
+        console.log('FRONTEND: handleStopBackup called, backupStatus:', backupStatus);
+        addLog('FRONTEND: Stop button clicked, backup status: ' + backupStatus);
+        
+        // Test connection first
+        try {
+            console.log('FRONTEND: Testing connection...');
+            const testResult = await App.TestConnection();
+            console.log('FRONTEND: Connection test result:', testResult);
+            addLog('Connection test: ' + testResult);
+        } catch (err: any) {
+            console.log('FRONTEND: Connection test failed:', err);
+            addLog('Connection test FAILED: ' + err);
+            return;
+        }
+        
         if (backupStatus !== 'Running' && backupStatus !== 'Paused') {
             addLog('Cannot stop: No backup is currently running or paused');
             return;
         }
+        
+        // Immediately disable the stop button to prevent multiple clicks
+        setCanStop(false);
+        addLog('Attempting to stop backup...');
+        console.log('FRONTEND: About to call App.StopBackup()');
+        
         try {
-            await App.StopBackup();
-            addLog('Backup stopped');
+            const result = await App.StopBackup();
+            console.log('FRONTEND: App.StopBackup() returned:', result);
+            addLog('Backup stop command sent successfully');
         } catch (err: any) {
+            console.log('FRONTEND: App.StopBackup() threw error:', err);
             addLog(`Error stopping backup: ${err}`);
-            console.error("Error stopping backup:", err);
-            // Fallback: reset UI state since there's no actual backup running
-            setBackupStatus('Idle');
-            setIsProcessing(false);
-            setCanPause(false);
-            setCanStop(false);
-            setCanResume(false);
-            addLog('Reset backup status - no active backup process found');
+            
+            // Reset UI state when there's no backup operation - this is a normal case
+            if (err.message && (err.message.includes('no backup operation') || err.message.includes('cannot be stopped'))) {
+                setBackupStatus('Idle');
+                setIsProcessing(false);
+                setCanPause(false);
+                setCanStop(false);
+                setCanResume(false);
+                setProgress(null);
+                addLog('UI state reset - no active backup process found');
+            } else {
+                // Re-enable stop button for other types of errors
+                setCanStop(true);
+                addLog('Unexpected error occurred, stop button re-enabled');
+            }
         }
     };
 

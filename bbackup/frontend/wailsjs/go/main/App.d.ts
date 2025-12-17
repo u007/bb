@@ -30,4 +30,6 @@ export function StartBackup(arg1:string,arg2:Array<string>,arg3:Array<string>):P
 
 export function StopBackup():Promise<void>;
 
+export function TestConnection():Promise<string>;
+
 export function ValidateBackupPath(arg1:string):Promise<boolean>;

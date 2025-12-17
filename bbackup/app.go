@@ -234,6 +234,13 @@ func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
 
+// TestConnection tests if the frontend-backend connection is working
+func (a *App) TestConnection() string {
+	fmt.Fprintf(os.Stderr, "DEBUG: TestConnection called - frontend-backend connection is working\n")
+	a.emitEvent("app:log", "TestConnection called - connection is working")
+	return "Connection is working"
+}
+
 // GetSuggestedBackupPaths returns a list of common user directories to suggest for backup.
 func (a *App) GetSuggestedBackupPaths() ([]string, error) {
 	homeDir, err := os.UserHomeDir()
@@ -551,13 +558,6 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 	a.backupMutex.Unlock()
 	fmt.Fprintf(os.Stderr, "DEBUG: Cancel function stored\n")
 
-	defer func() {
-		fmt.Fprintf(os.Stderr, "DEBUG: Defer function called - cleaning up cancel\n")
-		a.backupMutex.Lock()
-		a.backupCancel = nil
-		a.backupMutex.Unlock()
-	}()
-
 	// Progress callback function with state tracking
 	fmt.Fprintf(os.Stderr, "DEBUG: About to create progress callback\n")
 	progressCb := func(progress backend.BackupProgress) {
@@ -650,6 +650,11 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 		}
 		a.saveBackupState()
 	}
+	
+	// Clean up cancel function now that backup is truly finished
+	fmt.Fprintf(os.Stderr, "DEBUG: Backup finished - cleaning up cancel function\n")
+	a.backupCancel = nil
+	
 	a.backupMutex.Unlock()
 	
 	if err != nil {
@@ -768,15 +773,25 @@ func (a *App) GetBackupState() *BackupState {
 
 // StopBackup stops the current backup operation
 func (a *App) StopBackup() error {
+	fmt.Fprintf(os.Stderr, "DEBUG: StopBackup function called\n")
+	
 	a.backupMutex.Lock()
+	defer a.backupMutex.Unlock()
+	
+	fmt.Fprintf(os.Stderr, "DEBUG: StopBackup acquired mutex lock\n")
 	
 	if a.backupState == nil {
-		a.backupMutex.Unlock()
+		fmt.Fprintf(os.Stderr, "DEBUG: StopBackup - backupState is nil, resetting UI state\n")
+		// Even though there's no backup state, emit events to reset UI
+		a.emitEvent("app:log", "No backup operation in progress - resetting UI state")
+		a.emitEvent("app:backup:status", "Idle")
 		return fmt.Errorf("no backup operation in progress")
 	}
 	
 	// Check if we have an actual running backup process (has cancel function)
 	hasActiveProcess := a.backupCancel != nil
+	
+	fmt.Fprintf(os.Stderr, "DEBUG: StopBackup - State: %s, HasCancel: %v\n", a.backupState.Status, hasActiveProcess)
 	
 	// If backup appears running but no active process, it's an orphaned state
 	if a.backupState.Status == "running" && !hasActiveProcess {
@@ -786,7 +801,6 @@ func (a *App) StopBackup() error {
 		
 		// Save the updated state
 		err := a.saveBackupState()
-		a.backupMutex.Unlock()
 		
 		if err != nil {
 			a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
@@ -799,31 +813,34 @@ func (a *App) StopBackup() error {
 	}
 	
 	if !hasActiveProcess {
-		a.backupMutex.Unlock()
-		return fmt.Errorf("no backup operation in progress")
+		return fmt.Errorf("no backup operation in progress (no cancel function)")
 	}
 	
-	if a.backupState.Status != "running" {
-		a.backupMutex.Unlock()
-		return fmt.Errorf("backup is not running (current status: %s)", a.backupState.Status)
+	// Allow stop if status is "running", "paused", or in some intermediate states
+	// This makes the stop function more forgiving and robust
+	if a.backupState.Status != "running" && a.backupState.Status != "paused" {
+		return fmt.Errorf("backup cannot be stopped from status: %s", a.backupState.Status)
 	}
 	
-	// Cancel the actual running backup
+	// Cancel the actual running backup immediately
+	fmt.Fprintf(os.Stderr, "DEBUG: Calling backupCancel to stop backup\n")
 	a.backupCancel()
+	
+	// Update state immediately to reflect the stop request
 	a.backupState.Status = "stopped"
 	a.backupState.LastUpdateTime = time.Now()
 	
 	// Save the state for potential resume
 	err := a.saveBackupState()
-	a.backupMutex.Unlock()
 	
 	if err != nil {
 		a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
 	}
 	
-	a.emitEvent("app:log", "Backup stopped by user")
+	a.emitEvent("app:log", "Backup stop requested - cancelling backup operations")
 	a.emitEvent("app:backup:status", "Stopped")
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: StopBackup completed successfully\n")
 	return nil
 }
 

@@ -58,6 +58,10 @@ export function StopBackup() {
   return window['go']['main']['App']['StopBackup']();
 }
 
+export function TestConnection() {
+  return window['go']['main']['App']['TestConnection']();
+}
+
 export function ValidateBackupPath(arg1) {
   return window['go']['main']['App']['ValidateBackupPath'](arg1);
 }

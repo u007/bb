@@ -204,6 +204,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 	// For each source path, walk through files and process them
 	fmt.Fprintf(os.Stderr, "DEBUG: Starting to process %d source paths\n", len(sourcePaths))
 	for i, sourcePath := range sourcePaths {
+		// Check for context cancellation before starting each source path
+		select {
+		case <-ctx.Done():
+			currentProgress.Status = "Cancelled"
+			currentProgress.Error = "Backup cancelled by user before processing " + sourcePath
+			updateProgress()
+			return ctx.Err()
+		default:
+			// Continue
+		}
+		
 		fmt.Fprintf(os.Stderr, "DEBUG: Processing source path %d: %s\n", i, sourcePath)
 		absSourcePath, err := filepath.Abs(sourcePath)
 		if err != nil {
@@ -220,20 +231,31 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 		fmt.Fprintf(os.Stderr, "DEBUG: About to start WalkDir\n")
 		filesWalked := 0
 		err = filepath.WalkDir(absSourcePath, func(path string, d fs.DirEntry, err error) error {
-			filesWalked++
-			if filesWalked%10 == 0 {
-				fmt.Fprintf(os.Stderr, "DEBUG: WalkDir has processed %d files, current path: %s\n", filesWalked, path)
-			}
-			
-			// Check for context cancellation more frequently
+			// Check for context cancellation more frequently (every file)
 			select {
 			case <-ctx.Done():
 				currentProgress.Status = "Cancelled"
-				currentProgress.Error = "Backup cancelled by user"
+				currentProgress.Error = "Backup cancelled by user during file scanning"
 				updateProgress()
 				return ctx.Err() // Propagate cancellation error
 			default:
 				// Continue
+			}
+			
+			filesWalked++
+			if filesWalked%10 == 0 {
+				fmt.Fprintf(os.Stderr, "DEBUG: WalkDir has processed %d files, current path: %s\n", filesWalked, path)
+				
+				// Additional context check every 10 files
+				select {
+				case <-ctx.Done():
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user during file scanning"
+					updateProgress()
+					return ctx.Err()
+				default:
+					// Continue
+				}
 			}
 			
 			// Memory management and batch processing
@@ -303,7 +325,7 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			}
 
 			fileCount++
-				currentProgress.TotalFiles = fileCount // Update total files found so far
+			currentProgress.TotalFiles = fileCount // Update total files found so far
 			currentProgress.FilesProcessed++
 			currentProgress.CurrentFile = path
 			currentProgress.Status = "Processing file"
@@ -350,11 +372,23 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			if fileChanged {
 				currentProgress.Status = "↻ " + filepath.Base(path) // Changed file indicator
 				updateProgress()
+				
+				// Additional context check before starting file I/O
+				select {
+				case <-ctx.Done():
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user before file storage"
+					updateProgress()
+					return ctx.Err()
+				default:
+					// Continue
+				}
+				
 				hash, err := StoreFileContentWithContext(ctx, casBaseDir, path)
 				if err != nil {
 					if err == context.Canceled {
 						currentProgress.Status = "Cancelled"
-						currentProgress.Error = "Backup cancelled by user during file processing"
+						currentProgress.Error = "Backup cancelled by user during file storage"
 						updateProgress()
 						return ctx.Err()
 					}
@@ -364,6 +398,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 					return fmt.Errorf("failed to store content for %s: %w", path, err)
 				}
 				fileHash = hash
+				
+				// Check context again after file storage
+				select {
+				case <-ctx.Done():
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user after file storage"
+					updateProgress()
+					return ctx.Err()
+				default:
+					// Continue
+				}
 			} else {
 				currentProgress.Status = "= " + filepath.Base(path) // Unchanged file indicator
 				currentProgress.FilesProcessed-- // Don't count as processed for progress
@@ -384,6 +429,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			// Batch processing: flush based on count or time
 			timeSinceFlush := time.Since(lastFlushTime)
 			if batchCount >= config.BatchSize || timeSinceFlush >= config.FlushInterval {
+				// Check for context cancellation before I/O heavy flush operation
+				select {
+				case <-ctx.Done():
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user during batch flush"
+					updateProgress()
+					return ctx.Err()
+				default:
+					// Continue
+				}
+				
 				fmt.Fprintf(os.Stderr, "DEBUG: Flushing batch (count: %d, time: %v)\n", batchCount, timeSinceFlush)
 				if err := snapshotWriter.writer.Flush(); err != nil {
 					currentProgress.Status = "✗ Failed"
@@ -396,6 +452,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 				
 				// Force garbage collection to free memory
 				runtime.GC()
+				
+				// Check context again after heavy I/O operation
+				select {
+				case <-ctx.Done():
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user after batch flush"
+					updateProgress()
+					return ctx.Err()
+				default:
+					// Continue
+				}
 			}
 			
 			// Only count bytes for files that were actually transferred
@@ -420,9 +487,31 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 		}
 	}
 
+	// Check for context cancellation before final operations
+	select {
+	case <-ctx.Done():
+		currentProgress.Status = "Cancelled"
+		currentProgress.Error = "Backup cancelled by user during finalization"
+		updateProgress()
+		return ctx.Err()
+	default:
+		// Continue
+	}
+
 	// Final flush and close of streaming snapshot writer
 	fmt.Fprintf(os.Stderr, "DEBUG: Final flush and close of streaming snapshot writer\n")
 	if batchCount > 0 {
+		// Check for context cancellation before final flush
+		select {
+		case <-ctx.Done():
+			currentProgress.Status = "Cancelled"
+			currentProgress.Error = "Backup cancelled by user during final flush"
+			updateProgress()
+			return ctx.Err()
+		default:
+			// Continue
+		}
+		
 		if err := snapshotWriter.writer.Flush(); err != nil {
 			currentProgress.Status = "Failed"
 			currentProgress.Error = fmt.Sprintf("Failed to flush final batch: %v", err)
@@ -433,6 +522,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 
 	currentProgress.Status = "Finalizing snapshot..."
 	updateProgress()
+
+	// Check for context cancellation before close
+	select {
+	case <-ctx.Done():
+		currentProgress.Status = "Cancelled"
+		currentProgress.Error = "Backup cancelled by user during snapshot finalization"
+		updateProgress()
+		return ctx.Err()
+	default:
+		// Continue
+	}
 
 	// Close the streaming snapshot writer (this finalizes the snapshot)
 	if err := snapshotWriter.Close(); err != nil {
