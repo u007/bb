@@ -125,6 +125,7 @@ func TestMemoryEfficientBackup(t *testing.T) {
 				backupDir,
 				[]string{sourceDir},
 				[]string{}, // No ignore patterns
+				nil, // tracker
 				progressCallback,
 				test.config,
 			)
@@ -290,7 +291,8 @@ func BenchmarkMemoryEfficientBackup(b *testing.B) {
 			backupDir,
 			[]string{sourceDir},
 			[]string{},
-			nil,
+			nil, // tracker
+			nil, // progressCallback
 			config,
 		)
 		

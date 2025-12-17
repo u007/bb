@@ -319,9 +319,9 @@ type BatchConfig struct {
 // DefaultBatchConfig returns sensible defaults for batch processing
 func DefaultBatchConfig() BatchConfig {
 	return BatchConfig{
-		BatchSize:     1000,
-		MemoryLimit:   50 * 1024 * 1024, // 50MB
-		FlushInterval: 30 * time.Second,
+		BatchSize:     5000,
+		MemoryLimit:   200 * 1024 * 1024, // 200MB
+		FlushInterval: 60 * time.Second,
 	}
 }
 

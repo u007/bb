@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json" // Added for JSON encoding
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -518,6 +519,41 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 		return
 	}
 	
+	// Initialize FileTracker
+	var tracker backend.FileTracker
+	// Use SQLite for file tracking if possible, fallback to map if needed?
+	// For now, let's use SQLite if we can.
+	// We need a path for the SQLite DB. Let's put it in the destination path.
+	trackerDbPath := filepath.Join(config.DestinationPath, ".backup_progress.db")
+	sqliteTracker, err := backend.NewSQLiteFileTracker(trackerDbPath)
+	if err != nil {
+		a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to initialize SQLite tracker: %v. Falling back to memory.", err))
+		// Fallback to memory tracker using the map we might have loaded
+		// (Assuming we loaded map from JSON if migrating... but for now let's just start fresh or from what we have)
+		var files map[string]bool
+		if a.backupState.ProcessedFiles != nil {
+			files = a.backupState.ProcessedFiles
+		}
+		tracker = backend.NewMapFileTracker(files)
+	} else {
+		tracker = sqliteTracker
+		// If resuming and we have legacy JSON state but empty DB, we might want to populate DB?
+		// Or we accept that switching to SQLite starts fresh-ish or we migrate.
+		// For this implementation, we'll assume SQLite is the source of truth if it exists.
+		// If it's a new run, it's empty.
+		// If resuming, it should have data.
+		
+		// If we have data in JSON state (ProcessedFiles) but DB is empty, migrate it?
+		count, _ := tracker.GetProcessedCount()
+		if count == 0 && len(a.backupState.ProcessedFiles) > 0 {
+			a.emitEvent("app:log", "Migrating progress to new database format...")
+			for k := range a.backupState.ProcessedFiles {
+				sqliteTracker.MarkProcessed(k)
+			}
+		}
+	}
+	defer tracker.Close()
+	
 	fmt.Fprintf(os.Stderr, "DEBUG: About to release backup mutex lock\n")
 	a.backupMutex.Unlock()
 	fmt.Fprintf(os.Stderr, "DEBUG: Released backup mutex lock\n")
@@ -608,11 +644,30 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 			a.backupState.LastUpdateTime = time.Now()
 			if progress.CurrentFile != "" {
 				a.backupState.CurrentFile = progress.CurrentFile
-				// Mark file as processed for resume capability
+				
+				// Mark file as processed in tracker
+				// NOTE: We're doing this inside the mutex lock, which is okay but
+				// writing to SQLite might be slower than map.
+				// For truly high performance, we might want to batch this or do it async,
+				// but this ensures consistency.
+				// Also, we update the legacy map for UI compatibility if needed/resume
+				// (but we should phase that out or only use for small sets)
+				
+				// Keep legacy map for now so we don't break other parts of App
+				// that might read it, although we should rely on SQLite.
+				if a.backupState.ProcessedFiles == nil {
+					a.backupState.ProcessedFiles = make(map[string]bool)
+				}
 				a.backupState.ProcessedFiles[progress.CurrentFile] = true
 			}
 		}
+		// Release app state lock
 		a.backupMutex.Unlock()
+		
+		// Update tracker outside the main lock to avoid holding it during DB I/O
+		if progress.CurrentFile != "" {
+			tracker.MarkProcessed(progress.CurrentFile)
+		}
 		
 		// Emit events in a non-blocking goroutine to prevent deadlocks
 		go func() {
@@ -655,7 +710,7 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 	}
 
 	fmt.Fprintf(os.Stderr, "DEBUG: About to call backend.RunBackup\n")
-	err := backend.RunBackup(backupCtx, config.DestinationPath, config.SourcePaths, config.IgnorePatterns, progressCb)
+	err = backend.RunBackup(backupCtx, config.DestinationPath, config.SourcePaths, config.IgnorePatterns, tracker, progressCb)
 	fmt.Fprintf(os.Stderr, "DEBUG: backend.RunBackup returned with err=%v\n", err)
 	
 	// Update final state
@@ -663,11 +718,22 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 	if a.backupState != nil {
 		a.backupState.LastUpdateTime = time.Now()
 		if err != nil {
-			if err == context.Canceled {
-				// Status already set by StopBackup/PauseBackup
+			// Check for cancellation using multiple methods to be robust
+			isCancelled := errors.Is(err, context.Canceled) || 
+				strings.Contains(strings.ToLower(err.Error()), "canceled") || 
+				strings.Contains(strings.ToLower(err.Error()), "cancelled")
+				
+			if isCancelled {
+				// Status already set by StopBackup/PauseBackup to "paused" or "stopped"
+				fmt.Fprintf(os.Stderr, "DEBUG: Backup cancelled (Status: %s)\n", a.backupState.Status)
 			} else {
-				a.backupState.Status = "failed"
-				a.emitEvent("app:backup:status", "Failed")
+				fmt.Fprintf(os.Stderr, "DEBUG: Backup encountered error: %v (Type: %T) - Pausing backup\n", err, err)
+				a.backupState.Status = "paused"
+				// Update progress status to show why it paused
+				a.backupState.Progress.Status = fmt.Sprintf("Paused: %v", err)
+				a.backupState.Progress.Error = err.Error()
+				a.emitEvent("app:log", fmt.Sprintf("Backup paused due to error: %v", err))
+				a.emitEvent("app:backup:status", "Paused")
 			}
 		} else {
 			a.backupState.Status = "completed"
@@ -676,7 +742,7 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 			os.Remove(stateFile)
 			a.emitEvent("app:backup:status", "Completed")
 		}
-		a.saveBackupState()
+		a.saveBackupStateLocked()
 	}
 	
 	// Clean up cancel function now that backup is truly finished
@@ -687,8 +753,14 @@ func (a *App) runBackupWithResume(config *BackupConfig, resume bool) {
 	
 	if err != nil {
 		a.emitEvent("app:log", fmt.Sprintf("Backup %s: %s", backupID, err.Error()))
-		if err != context.Canceled {
-			a.emitEvent("app:backup:status", "Failed")
+		
+		isCancelled := errors.Is(err, context.Canceled) || 
+			strings.Contains(strings.ToLower(err.Error()), "canceled") || 
+			strings.Contains(strings.ToLower(err.Error()), "cancelled")
+			
+		if !isCancelled {
+			// We paused on error, so emit Paused status
+			a.emitEvent("app:backup:status", "Paused")
 		}
 	} else {
 		a.emitEvent("app:log", fmt.Sprintf("Backup %s completed successfully.", backupID))
@@ -744,20 +816,24 @@ func (a *App) ValidateBackupPath(path string) (bool, error) {
 	return true, nil
 }
 
-// saveBackupState saves the current backup state to disk
+// saveBackupState saves the current backup state to disk (thread-safe)
 func (a *App) saveBackupState() error {
 	a.backupMutex.RLock()
+	defer a.backupMutex.RUnlock()
+	return a.saveBackupStateLocked()
+}
+
+// saveBackupStateLocked saves the current backup state to disk (expects lock to be held)
+func (a *App) saveBackupStateLocked() error {
 	if a.backupState == nil {
-		a.backupMutex.RUnlock()
 		return nil
 	}
 	
-	// Create a copy to avoid long lock times
-	stateCopy := *a.backupState
+	// Create a copy to avoid long blocking operations if we were doing more complex things
+	// But since we are already locked, we just marshal directly
 	stateFile := filepath.Join(a.backupState.Config.DestinationPath, ".backup_state.json")
-	a.backupMutex.RUnlock()
 	
-	data, err := json.MarshalIndent(stateCopy, "", "  ")
+	data, err := json.MarshalIndent(a.backupState, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal backup state: %w", err)
 	}
@@ -828,7 +904,7 @@ func (a *App) StopBackup() error {
 		a.backupState.LastUpdateTime = time.Now()
 		
 		// Save the updated state
-		err := a.saveBackupState()
+		err := a.saveBackupStateLocked()
 		
 		if err != nil {
 			a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
@@ -859,14 +935,15 @@ func (a *App) StopBackup() error {
 	a.backupState.LastUpdateTime = time.Now()
 	
 	// Save the state for potential resume
-	err := a.saveBackupState()
+	err := a.saveBackupStateLocked()
 	
 	if err != nil {
 		a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
 	}
 	
 	a.emitEvent("app:log", "Backup stop requested - cancelling backup operations")
-	a.emitEvent("app:backup:status", "Stopped")
+	// Emit status directly to avoid queue drops
+	wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Stopped")
 	
 	fmt.Fprintf(os.Stderr, "DEBUG: StopBackup completed successfully\n")
 	return nil
@@ -891,7 +968,7 @@ func (a *App) PauseBackup() error {
 		a.backupState.LastUpdateTime = time.Now()
 		
 		// Save the updated state
-		err := a.saveBackupState()
+		err := a.saveBackupStateLocked()
 		a.backupMutex.Unlock()
 		
 		if err != nil {
@@ -899,7 +976,7 @@ func (a *App) PauseBackup() error {
 		}
 		
 		a.emitEvent("app:log", "Cleaned up orphaned backup state (backup process was not actually running)")
-		a.emitEvent("app:backup:status", "Paused")
+		wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Paused")
 		
 		return nil
 	}
@@ -923,7 +1000,7 @@ func (a *App) PauseBackup() error {
 	a.backupState.LastUpdateTime = time.Now()
 	
 	// Save the state for resume
-	err := a.saveBackupState()
+	err := a.saveBackupStateLocked()
 	a.backupMutex.Unlock()
 	
 	if err != nil {
@@ -935,7 +1012,9 @@ func (a *App) PauseBackup() error {
 	} else {
 		a.emitEvent("app:log", "Backup paused")
 	}
-	a.emitEvent("app:backup:status", "Paused")
+	
+	// Emit status event directly to ensure it's not dropped by full queue
+	wailsruntime.EventsEmit(a.ctx, "app:backup:status", "Paused")
 	
 	return nil
 }

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -134,12 +135,12 @@ func shouldIgnorePattern(fullPath, fileName, pattern string) bool {
 
 // RunBackup orchestrates the entire backup process for specified source paths to a CAS base directory.
 // It reports progress via the provided ProgressCallback.
-func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, progressCallback ProgressCallback) error {
-	return RunBackupWithBatchConfig(ctx, casBaseDir, sourcePaths, ignorePatterns, progressCallback, DefaultBatchConfig())
+func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, tracker FileTracker, progressCallback ProgressCallback) error {
+	return RunBackupWithBatchConfig(ctx, casBaseDir, sourcePaths, ignorePatterns, tracker, progressCallback, DefaultBatchConfig())
 }
 
 // RunBackupWithBatchConfig orchestrates the entire backup process with custom batch configuration.
-func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, progressCallback ProgressCallback, config BatchConfig) error {
+func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, tracker FileTracker, progressCallback ProgressCallback, config BatchConfig) error {
 	var currentProgress BackupProgress
 	updateProgress := func() {
 		if progressCallback != nil {
@@ -231,22 +232,11 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 		fmt.Fprintf(os.Stderr, "DEBUG: About to start WalkDir\n")
 		filesWalked := 0
 		err = filepath.WalkDir(absSourcePath, func(path string, d fs.DirEntry, err error) error {
-			// Check for context cancellation more frequently (every file)
-			select {
-			case <-ctx.Done():
-				currentProgress.Status = "Cancelled"
-				currentProgress.Error = "Backup cancelled by user during file scanning"
-				updateProgress()
-				return ctx.Err() // Propagate cancellation error
-			default:
-				// Continue
-			}
-
 			filesWalked++
-			if filesWalked%10 == 0 {
+			if filesWalked%100 == 0 {
 				fmt.Fprintf(os.Stderr, "DEBUG: WalkDir has processed %d files, current path: %s\n", filesWalked, path)
 
-				// Additional context check every 10 files
+				// Check context every 100 files instead of every file
 				select {
 				case <-ctx.Done():
 					currentProgress.Status = "Cancelled"
@@ -259,8 +249,8 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			}
 
 			// Memory management and batch processing
-			if fileCount%100 == 0 {
-				// Give other goroutines a chance to run every 100 files
+			if fileCount%500 == 0 {
+				// Give other goroutines a chance to run every 500 files
 				runtime.Gosched()
 
 				// Check memory usage
@@ -278,6 +268,17 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 				currentProgress.Error = fmt.Sprintf("Error accessing %s: %v", path, err)
 				updateProgress()
 				return nil // Don't return error here to allow WalkDir to continue
+			}
+
+			// Check if file was already processed (resume capability)
+
+			if tracker != nil && tracker.IsProcessed(path) {
+				// Update progress to show the file is being skipped
+				currentProgress.CurrentFile = path
+				currentProgress.Status = "Skipping (already processed)"
+				// We don't increment files processed or bytes transferred here to avoid double counting
+				updateProgress()
+				return nil
 			}
 
 			// --- IGNORE LOGIC ---
@@ -331,16 +332,6 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			currentProgress.Status = "Processing file"
 			updateProgress()
 
-			// Check for context cancellation before heavy file operations
-			select {
-			case <-ctx.Done():
-				currentProgress.Status = "Cancelled"
-				currentProgress.Error = "Backup cancelled by user during file processing"
-				updateProgress()
-				return ctx.Err()
-			default:
-				// Continue
-			}
 
 			currentFileEntry := &FileEntry{
 				Path:    relPath,
@@ -373,20 +364,10 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 				currentProgress.Status = "↻ " + filepath.Base(path) // Changed file indicator
 				updateProgress()
 
-				// Additional context check before starting file I/O
-				select {
-				case <-ctx.Done():
-					currentProgress.Status = "Cancelled"
-					currentProgress.Error = "Backup cancelled by user before file storage"
-					updateProgress()
-					return ctx.Err()
-				default:
-					// Continue
-				}
 
 				hash, err := StoreFileContentWithContext(ctx, casBaseDir, path)
 				if err != nil {
-					if err == context.Canceled {
+					if errors.Is(err, context.Canceled) {
 						currentProgress.Status = "Cancelled"
 						currentProgress.Error = "Backup cancelled by user during file storage"
 						updateProgress()
@@ -399,16 +380,6 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 				}
 				fileHash = hash
 
-				// Check context again after file storage
-				select {
-				case <-ctx.Done():
-					currentProgress.Status = "Cancelled"
-					currentProgress.Error = "Backup cancelled by user after file storage"
-					updateProgress()
-					return ctx.Err()
-				default:
-					// Continue
-				}
 			} else {
 				currentProgress.Status = "= " + filepath.Base(path) // Unchanged file indicator
 				currentProgress.FilesProcessed-- // Don't count as processed for progress
@@ -473,14 +444,14 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 
 			return nil
 		})
-		if err != nil {
-			if err == context.Canceled { // Check if the error was due to context cancellation
-				currentProgress.Status = "Cancelled"
-				currentProgress.Error = "Backup cancelled by user"
-				updateProgress()
-				return err // Propagate cancellation error
-			}
-			currentProgress.Status = "Failed"
+			if err != nil {
+				if errors.Is(err, context.Canceled) { // Check if the error was due to context cancellation
+					currentProgress.Status = "Cancelled"
+					currentProgress.Error = "Backup cancelled by user"
+					updateProgress()
+					return err // Propagate cancellation error
+				}
+				currentProgress.Status = "Failed"
 			currentProgress.Error = fmt.Sprintf("Error walking source path %s: %v", sourcePath, err)
 			updateProgress()
 			return fmt.Errorf("error walking source path %s: %w", sourcePath, err)
