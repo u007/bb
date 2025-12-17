@@ -6,6 +6,8 @@ export function CheckAllBackupStates():Promise<Record<string, main.BackupState>>
 
 export function GetBackupState():Promise<main.BackupState>;
 
+export function GetDeploymentState():Promise<main.DeploymentState>;
+
 export function GetSuggestedBackupPaths():Promise<Array<string>>;
 
 export function GetSuggestedIgnorePatterns():Promise<Array<string>>;
@@ -20,7 +22,11 @@ export function RestartBackup(arg1:main.BackupConfig):Promise<void>;
 
 export function ResumeBackup():Promise<void>;
 
+export function SelectDeployTargetDirectory():Promise<string>;
+
 export function SelectDestinationDirectory():Promise<string>;
+
+export function SelectSnapshotFile():Promise<string>;
 
 export function SelectSourceDirectory():Promise<string>;
 
@@ -28,7 +34,11 @@ export function SetSavedBackups(arg1:Array<main.BackupConfig>):Promise<void>;
 
 export function StartBackup(arg1:string,arg2:Array<string>,arg3:Array<string>):Promise<void>;
 
+export function StartDeployment(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+
 export function StopBackup():Promise<void>;
+
+export function StopDeployment():Promise<void>;
 
 export function TestConnection():Promise<string>;
 

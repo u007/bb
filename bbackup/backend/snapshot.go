@@ -127,6 +127,24 @@ func LoadLatestSnapshot(casBaseDir string) (*Snapshot, error) {
 	return snapshot, nil
 }
 
+// LoadSnapshotFromFile loads a snapshot from a specific file path.
+func LoadSnapshotFromFile(snapshotPath string) (*Snapshot, error) {
+	fmt.Fprintf(os.Stderr, "DEBUG: LoadSnapshotFromFile loading from %s\n", snapshotPath)
+	
+	data, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read snapshot file %s: %w", snapshotPath, err)
+	}
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal snapshot from %s: %w", snapshotPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Loaded snapshot with %d files\n", len(snapshot.Files))
+	return &snapshot, nil
+}
+
 // SaveSnapshot writes a new snapshot to the backup destination.
 func SaveSnapshot(casBaseDir string, snapshot *Snapshot) error {
 	if snapshot.ID == "" {

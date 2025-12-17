@@ -27,6 +27,35 @@ interface BackupConfig {
     nextBackup?: string;
 }
 
+// Define deployment progress interface
+interface DeploymentProgress {
+    totalFiles: number;
+    filesProcessed: number;
+    filesSkipped: number;
+    filesCopied: number;
+    currentFile: string;
+    bytesCopied: number;
+    status: string;
+    error: string;
+}
+
+// Define deployment state interface
+interface DeploymentState {
+    id: string;
+    status: string;
+    progress: DeploymentProgress;
+    config: {
+        snapshotPath: string;
+        targetPath: string;
+        casBaseDir: string;
+        preserveModTimes: boolean;
+        useHardLinks: boolean;
+        ignorePatterns: string[];
+    };
+    startTime: string;
+    lastUpdateTime: string;
+}
+
 function BackupApp() {
     const [backups, setBackups] = useState<BackupConfig[]>([]);
     const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null);
@@ -57,6 +86,19 @@ function BackupApp() {
     const [canPause, setCanPause] = useState<boolean>(false);
     const [canStop, setCanStop] = useState<boolean>(false);
     const [canResume, setCanResume] = useState<boolean>(false);
+    
+    // Deployment state
+    const [deploymentStatus, setDeploymentStatus] = useState<string>('Idle');
+    const [deploymentProgress, setDeploymentProgress] = useState<DeploymentProgress | null>(null);
+    const [isDeploying, setIsDeploying] = useState<boolean>(false);
+    const [canStopDeployment, setCanStopDeployment] = useState<boolean>(false);
+    
+    // Deployment form state
+    const [showDeployForm, setShowDeployForm] = useState<boolean>(false);
+    const [deploySnapshotPath, setDeploySnapshotPath] = useState<string>('');
+    const [deployTargetPath, setDeployTargetPath] = useState<string>('');
+    const [deployCASBaseDir, setDeployCASBaseDir] = useState<string>('');
+    const [deployIgnorePatterns, setDeployIgnorePatterns] = useState<string[]>([]);
 
     // Auto-scroll activity log to bottom when new entries are added
     useEffect(() => {
@@ -200,6 +242,35 @@ function BackupApp() {
         };
         
         // Check after a short delay to ensure event listeners are set up
+        // Set up deployment event listeners
+        EventsOn('app:deployment:status', (status: string) => {
+            setDeploymentStatus(status);
+            
+            // Update deployment control states based on status
+            if (status === 'Running') {
+                setIsDeploying(true);
+                setCanStopDeployment(true);
+            } else if (status === 'Stopped' || status === 'Completed' || status === 'Failed' || status === 'Cancelled') {
+                setIsDeploying(false);
+                setDeploymentProgress(null);
+                setCanStopDeployment(false);
+            }
+        });
+
+        EventsOn('app:deployment:progress', (jsonProgress: string) => {
+            try {
+                const parsedProgress: DeploymentProgress = JSON.parse(jsonProgress);
+                setDeploymentProgress(parsedProgress);
+                addLog(`Deploy: ${parsedProgress.status} - Skipped: ${parsedProgress.filesSkipped}, Copied: ${parsedProgress.filesCopied}/${parsedProgress.totalFiles}, current: ${parsedProgress.currentFile}`);
+                if (parsedProgress.error) {
+                    addLog(`Deploy Error: ${parsedProgress.error}`);
+                }
+            } catch (e) {
+                addLog(`Error parsing deployment progress update: ${e}`);
+                console.error("Error parsing deployment progress update:", e, jsonProgress);
+            }
+        });
+
         setTimeout(checkExistingBackupState, 500);
 
         // Cleanup event listeners on component unmount
@@ -208,6 +279,8 @@ function BackupApp() {
             EventsOff('app:backup:status');
             EventsOff('app:backup:progress');
             EventsOff('app:backup:resumable');
+            EventsOff('app:deployment:status');
+            EventsOff('app:deployment:progress');
         };
     }, []);
 
@@ -633,6 +706,60 @@ function BackupApp() {
         }
     };
 
+    // Deployment handler functions
+    const handleStartDeployment = async () => {
+        if (!deploySnapshotPath || !deployTargetPath || !deployCASBaseDir) {
+            addLog('Error: Please fill in all deployment fields');
+            return;
+        }
+
+        try {
+            addLog(`Starting deployment from ${deploySnapshotPath} to ${deployTargetPath}`);
+            App.StartDeployment(deploySnapshotPath, deployTargetPath, deployCASBaseDir, deployIgnorePatterns);
+            setShowDeployForm(false);
+        } catch (err: any) {
+            addLog(`Error starting deployment: ${err}`);
+            console.error("Error starting deployment:", err);
+        }
+    };
+
+    const handleStopDeployment = async () => {
+        if (deploymentStatus !== 'Running') {
+            addLog('Cannot stop: No deployment is currently running');
+            return;
+        }
+
+        try {
+            await App.StopDeployment();
+            addLog('Deployment stopped');
+        } catch (err: any) {
+            addLog(`Error stopping deployment: ${err}`);
+            console.error("Error stopping deployment:", err);
+        }
+    };
+
+    const handleSelectSnapshotFile = async () => {
+        try {
+            const selectedFile = await App.SelectSnapshotFile();
+            if (selectedFile) {
+                setDeploySnapshotPath(selectedFile);
+            }
+        } catch (err: any) {
+            console.error("Error selecting snapshot file:", err);
+        }
+    };
+
+    const handleSelectDeployTarget = async () => {
+        try {
+            const selectedDir = await App.SelectDeployTargetDirectory();
+            if (selectedDir) {
+                setDeployTargetPath(selectedDir);
+            }
+        } catch (err: any) {
+            console.error("Error selecting deployment target:", err);
+        }
+    };
+
     const enabledCount = backups.filter(b => b.enabled).length;
     const scheduledCount = backups.filter(b => b.enabled && b.schedule !== 'manual').length;
     const totalSources = backups.reduce((sum, b) => sum + b.sourcePaths.length, 0);
@@ -907,6 +1034,37 @@ function BackupApp() {
                                     )}
                                 </div>
                             )}
+                            
+                            {/* Deployment Control Buttons */}
+                            {deploymentStatus === 'Running' && (
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={handleStopDeployment}
+                                        className="btn bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
+                                        </svg>
+                                        Stop Deployment
+                                    </button>
+                                </div>
+                            )}
+                            
+                            {/* Deploy button when not running */}
+                            {deploymentStatus === 'Idle' && (
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setShowDeployForm(true)}
+                                        className="btn bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                        </svg>
+                                        Deploy Files
+                                    </button>
+                                </div>
+                            )}
                         </div>
                         
                         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border-l-4 border-l-blue-500 mb-6 shadow-inner">
@@ -968,6 +1126,60 @@ function BackupApp() {
                                 )}
                             </p>
                         </div>
+                        
+                        {/* Deployment Progress Display */}
+                        {deploymentProgress && (
+                            <div className="bg-gradient-to-r from-purple-50 to-pink-50 p-6 rounded-xl border-l-4 border-l-purple-500 mb-6 shadow-inner">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className={`w-3 h-3 rounded-full ${
+                                        deploymentStatus === 'Running' ? 'bg-purple-500 animate-pulse' : 
+                                        deploymentStatus === 'Completed' ? 'bg-green-500' : 
+                                        deploymentStatus === 'Failed' || deploymentStatus === 'Stopped' ? 'bg-red-500' : 'bg-gray-500'
+                                    }`}></div>
+                                    <h3 className="text-lg font-semibold text-gray-800">Deployment Progress</h3>
+                                </div>
+                                
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-gray-700 font-medium">Files Skipped:</span>
+                                        <span className="text-green-600 font-semibold">{deploymentProgress.filesSkipped}</span>
+                                    </div>
+                                    
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-gray-700 font-medium">Files Copied:</span>
+                                        <span className="text-blue-600 font-semibold">{deploymentProgress.filesCopied} / {deploymentProgress.totalFiles}</span>
+                                    </div>
+                                    
+                                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                        <div 
+                                            className="bg-gradient-to-r from-purple-500 to-pink-600 h-2 rounded-full transition-all duration-500 ease-out"
+                                            style={{ width: `${deploymentProgress.totalFiles > 0 ? (deploymentProgress.filesCopied / deploymentProgress.totalFiles) * 100 : 0}%` }}
+                                        ></div>
+                                    </div>
+                                    
+                                    {deploymentProgress.currentFile && (
+                                        <div className="flex items-center gap-2 text-gray-700">
+                                            <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            <span className="text-sm truncate">Deploying: {deploymentProgress.currentFile}</span>
+                                        </div>
+                                    )}
+                                    
+                                    {deploymentProgress.status && (
+                                        <div className="text-sm text-gray-600 bg-purple-100/80 p-2 rounded-lg">
+                                            <span className="font-medium">Status:</span> {deploymentProgress.status}
+                                        </div>
+                                    )}
+                                    
+                                    {deploymentProgress.error && (
+                                        <div className="text-sm text-red-700 bg-red-50 p-3 rounded-lg border-l-4 border-l-red-500">
+                                            <span className="font-medium">Error:</span> {deploymentProgress.error}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                         
                         <div className="bg-gray-900 text-emerald-400 font-mono rounded-xl shadow-inner">
                             <div className="p-4 border-b border-gray-700">
@@ -1372,6 +1584,133 @@ function BackupApp() {
                                 </svg>
                                 Close
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Deployment Form Modal */}
+            {showDeployForm && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 fade-in">
+                    <div className="glass max-w-2xl w-full max-h-[90vh] overflow-y-auto rounded-2xl shadow-2xl border border-white/20">
+                        <div className="p-8">
+                            <div className="flex items-center justify-between mb-8">
+                                <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
+                                    <span className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 shadow-lg">
+                                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                        </svg>
+                                    </span>
+                                    Deploy Files
+                                </h2>
+                                <button 
+                                    className="text-gray-500 hover:text-gray-700 p-2 rounded-lg hover:bg-gray-100"
+                                    onClick={() => setShowDeployForm(false)}
+                                >
+                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <div className="space-y-6">
+                                {/* Snapshot File Selection */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Snapshot File
+                                    </label>
+                                    <div className="flex gap-3">
+                                        <input
+                                            type="text"
+                                            value={deploySnapshotPath}
+                                            onChange={(e) => setDeploySnapshotPath(e.target.value)}
+                                            placeholder="Select snapshot file to deploy from..."
+                                            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                        />
+                                        <button
+                                            onClick={handleSelectSnapshotFile}
+                                            className="btn bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-all duration-200 flex items-center gap-2"
+                                        >
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                            </svg>
+                                            Browse
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Target Directory Selection */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Target Directory
+                                    </label>
+                                    <div className="flex gap-3">
+                                        <input
+                                            type="text"
+                                            value={deployTargetPath}
+                                            onChange={(e) => setDeployTargetPath(e.target.value)}
+                                            placeholder="Select target directory for deployment..."
+                                            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                        />
+                                        <button
+                                            onClick={handleSelectDeployTarget}
+                                            className="btn bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-all duration-200 flex items-center gap-2"
+                                        >
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                            </svg>
+                                            Browse
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* CAS Base Directory */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        CAS Base Directory
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={deployCASBaseDir}
+                                        onChange={(e) => setDeployCASBaseDir(e.target.value)}
+                                        placeholder="Path to CAS base directory (usually the backup destination)..."
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                    />
+                                </div>
+
+                                {/* Deployment Options Info */}
+                                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <span className="font-medium text-purple-800">Smart Deployment</span>
+                                    </div>
+                                    <p className="text-sm text-purple-700">
+                                        This will compare file hashes and only copy files that have changed. 
+                                        Unchanged files will be skipped to preserve modification times and avoid unnecessary I/O.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Form Actions */}
+                            <div className="flex gap-4 justify-end mt-8">
+                                <button 
+                                    className="btn bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-8 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2" 
+                                    onClick={() => setShowDeployForm(false)}
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    className="btn bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-semibold py-3 px-8 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2" 
+                                    onClick={handleStartDeployment}
+                                >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                    </svg>
+                                    Start Deployment
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -37,14 +37,27 @@ type BackupConfig struct {
 	IgnorePatterns  []string `json:"ignorePatterns"`
 }
 
+// DeploymentState represents the current state of a deployment operation
+type DeploymentState struct {
+	ID              string                        `json:"id"`
+	Status          string                        `json:"status"` // "running", "paused", "stopped", "completed", "failed"
+	Progress        backend.DeploymentProgress    `json:"progress"`
+	Config          backend.DeploymentConfig      `json:"config"`
+	StartTime       time.Time                     `json:"startTime"`
+	LastUpdateTime  time.Time                     `json:"lastUpdateTime"`
+}
+
 // App struct
 type App struct {
-	ctx            context.Context
-	backupState    *BackupState
-	backupCancel   context.CancelFunc
-	backupMutex    sync.RWMutex
-	eventQueue     chan eventMessage
-	savedBackups   []BackupConfig
+	ctx              context.Context
+	backupState      *BackupState
+	backupCancel     context.CancelFunc
+	backupMutex      sync.RWMutex
+	eventQueue       chan eventMessage
+	savedBackups     []BackupConfig
+	deploymentState  *DeploymentState
+	deploymentCancel context.CancelFunc
+	deploymentMutex  sync.RWMutex
 }
 
 type eventMessage struct {
@@ -52,11 +65,26 @@ type eventMessage struct {
 	data interface{}
 }
 
+// formatBytes formats a byte count into a human-readable string
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		backupState: nil,
-		eventQueue:  make(chan eventMessage, 1000),
+		backupState:     nil,
+		eventQueue:      make(chan eventMessage, 1000),
+		deploymentState: nil,
 	}
 }
 
@@ -951,4 +979,208 @@ func (a *App) RestartBackup(config *BackupConfig) error {
 	go a.runBackupWithResume(config, false)
 	
 	return nil
+}
+
+// StartDeployment starts a smart deployment operation
+func (a *App) StartDeployment(snapshotPath string, targetPath string, casBaseDir string, ignorePatterns []string) {
+	a.deploymentMutex.Lock()
+	defer a.deploymentMutex.Unlock()
+	
+	// Stop any existing deployment
+	if a.deploymentCancel != nil {
+		a.deploymentCancel()
+	}
+	
+	// Create deployment context with cancellation
+	deployCtx, cancel := context.WithCancel(a.ctx)
+	a.deploymentCancel = cancel
+	
+	// Create deployment configuration
+	config := backend.DeploymentConfig{
+		SnapshotPath:     snapshotPath,
+		TargetPath:       targetPath,
+		CASBaseDir:       casBaseDir,
+		PreserveModTimes: true,
+		UseHardLinks:     false,
+		IgnorePatterns:   ignorePatterns,
+	}
+	
+	// Initialize deployment state
+	a.deploymentState = &DeploymentState{
+		ID:             fmt.Sprintf("deploy-%d", time.Now().Unix()),
+		Status:         "running",
+		Config:         config,
+		StartTime:      time.Now(),
+		LastUpdateTime: time.Now(),
+		Progress: backend.DeploymentProgress{
+			Status: "Starting deployment...",
+		},
+	}
+	
+	// Start deployment in goroutine
+	go a.runDeployment(deployCtx)
+}
+
+// runDeployment executes the deployment operation
+func (a *App) runDeployment(ctx context.Context) {
+	a.emitEvent("app:log", "Starting smart deployment...")
+	a.emitEvent("app:deployment:status", "Running")
+	
+	// Progress callback function
+	progressCb := func(progress backend.DeploymentProgress) {
+		a.deploymentMutex.Lock()
+		if a.deploymentState != nil {
+			a.deploymentState.Progress = progress
+			a.deploymentState.LastUpdateTime = time.Now()
+			
+			// Emit deployment progress events for frontend
+			a.emitEvent("app:deployment:progress", progress)
+			a.emitEvent("app:log", fmt.Sprintf("Deploy: %s (Skipped: %d, Copied: %d/%d)", 
+				progress.CurrentFile, progress.FilesSkipped, progress.FilesCopied, progress.TotalFiles))
+		}
+		a.deploymentMutex.Unlock()
+	}
+	
+	// Run the deployment
+	err := backend.SmartDeploy(ctx, a.deploymentState.Config, progressCb)
+	
+	// Handle completion
+	a.deploymentMutex.Lock()
+	if a.deploymentState != nil {
+		if err != nil {
+			a.deploymentState.Status = "failed"
+			a.deploymentState.Progress.Error = err.Error()
+			a.emitEvent("app:log", fmt.Sprintf("Deployment failed: %v", err))
+			a.emitEvent("app:deployment:status", "Failed")
+		} else {
+			a.deploymentState.Status = "completed"
+			a.emitEvent("app:log", fmt.Sprintf("Deployment completed successfully! Files skipped: %d, Files copied: %d, Total bytes: %s", 
+				a.deploymentState.Progress.FilesSkipped, 
+				a.deploymentState.Progress.FilesCopied,
+				formatBytes(a.deploymentState.Progress.BytesCopied)))
+			a.emitEvent("app:deployment:status", "Completed")
+		}
+	}
+	
+	// Clean up
+	a.deploymentCancel = nil
+	a.deploymentMutex.Unlock()
+}
+
+// StopDeployment stops the current deployment operation
+func (a *App) StopDeployment() error {
+	a.deploymentMutex.Lock()
+	defer a.deploymentMutex.Unlock()
+	
+	if a.deploymentState == nil {
+		return fmt.Errorf("no deployment operation in progress")
+	}
+	
+	// Check if we have an actual running deployment process
+	hasActiveProcess := a.deploymentCancel != nil
+	
+	if !hasActiveProcess {
+		return fmt.Errorf("no deployment operation in progress (no cancel function)")
+	}
+	
+	if a.deploymentState.Status != "running" {
+		return fmt.Errorf("deployment cannot be stopped from status: %s", a.deploymentState.Status)
+	}
+	
+	// Cancel the deployment
+	a.deploymentCancel()
+	
+	// Update state immediately
+	a.deploymentState.Status = "stopped"
+	a.deploymentState.LastUpdateTime = time.Now()
+	
+	a.emitEvent("app:log", "Deployment stopped by user")
+	a.emitEvent("app:deployment:status", "Stopped")
+	
+	return nil
+}
+
+// GetDeploymentState returns the current deployment state
+func (a *App) GetDeploymentState() *DeploymentState {
+	a.deploymentMutex.RLock()
+	defer a.deploymentMutex.RUnlock()
+	
+	if a.deploymentState == nil {
+		return nil
+	}
+	
+	// Return a copy to avoid concurrent access issues
+	stateCopy := *a.deploymentState
+	return &stateCopy
+}
+
+// SelectSnapshotFile opens a file dialog to select a snapshot file
+func (a *App) SelectSnapshotFile() (string, error) {
+	// Check if we're in runtime context
+	if a.ctx == nil {
+		return "", fmt.Errorf("runtime context not available")
+	}
+	
+	defaultLocation, err := os.UserHomeDir()
+	if err != nil {
+		defaultLocation = ""
+	}
+	
+	filePath, err := wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select Snapshot File",
+		DefaultDirectory: defaultLocation,
+		Filters: []wailsruntime.FileFilter{
+			{
+				DisplayName: "Snapshot Files",
+				Pattern:     "*.snapshot",
+			},
+			{
+				DisplayName: "JSON Files",
+				Pattern:     "*.json",
+			},
+			{
+				DisplayName: "All Files",
+				Pattern:     "*",
+			},
+		},
+	})
+	
+	if err != nil {
+		return "", err
+	}
+	
+	if filePath == "" {
+		return "", fmt.Errorf("no file selected")
+	}
+	
+	return filePath, nil
+}
+
+// SelectDeployTargetDirectory opens a directory dialog to select deployment target
+func (a *App) SelectDeployTargetDirectory() (string, error) {
+	// Check if we're in runtime context
+	if a.ctx == nil {
+		return "", fmt.Errorf("runtime context not available")
+	}
+	
+	defaultLocation, err := os.UserHomeDir()
+	if err != nil {
+		defaultLocation = ""
+	}
+	
+	dirPath, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title:            "Select Deployment Target Directory",
+		DefaultDirectory:  defaultLocation,
+		CanCreateDirectories: true,
+	})
+	
+	if err != nil {
+		return "", err
+	}
+	
+	if dirPath == "" {
+		return "", fmt.Errorf("no directory selected")
+	}
+	
+	return dirPath, nil
 }

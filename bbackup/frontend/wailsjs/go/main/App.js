@@ -10,6 +10,10 @@ export function GetBackupState() {
   return window['go']['main']['App']['GetBackupState']();
 }
 
+export function GetDeploymentState() {
+  return window['go']['main']['App']['GetDeploymentState']();
+}
+
 export function GetSuggestedBackupPaths() {
   return window['go']['main']['App']['GetSuggestedBackupPaths']();
 }
@@ -38,8 +42,16 @@ export function ResumeBackup() {
   return window['go']['main']['App']['ResumeBackup']();
 }
 
+export function SelectDeployTargetDirectory() {
+  return window['go']['main']['App']['SelectDeployTargetDirectory']();
+}
+
 export function SelectDestinationDirectory() {
   return window['go']['main']['App']['SelectDestinationDirectory']();
+}
+
+export function SelectSnapshotFile() {
+  return window['go']['main']['App']['SelectSnapshotFile']();
 }
 
 export function SelectSourceDirectory() {
@@ -54,8 +66,16 @@ export function StartBackup(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartBackup'](arg1, arg2, arg3);
 }
 
+export function StartDeployment(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartDeployment'](arg1, arg2, arg3, arg4);
+}
+
 export function StopBackup() {
   return window['go']['main']['App']['StopBackup']();
+}
+
+export function StopDeployment() {
+  return window['go']['main']['App']['StopDeployment']();
 }
 
 export function TestConnection() {
