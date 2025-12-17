@@ -766,7 +766,7 @@ function BackupApp() {
     const lastActivity = logOutput[logOutput.length - 1] || 'Waiting for first run';
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 relative overflow-hidden">
+        <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 relative overflow-hidden pb-[50px]">
             <div className="pointer-events-none absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_20%_20%,rgba(59,130,246,0.25),transparent_35%),radial-gradient(circle_at_80%_0%,rgba(16,185,129,0.2),transparent_30%),radial-gradient(circle_at_50%_80%,rgba(236,72,153,0.2),transparent_30%)]" />
             <div className="relative w-full">
                 <div className="glass w-full px-4 py-6 rounded-t-2xl shadow-2xl fade-in border border-white/10">
