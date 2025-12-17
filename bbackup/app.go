@@ -44,6 +44,7 @@ type App struct {
 	backupCancel   context.CancelFunc
 	backupMutex    sync.RWMutex
 	eventQueue     chan eventMessage
+	savedBackups   []BackupConfig
 }
 
 type eventMessage struct {
@@ -144,9 +145,33 @@ func (a *App) checkAndRestoreInterruptedBackups() {
 	fmt.Fprintf(os.Stderr, "DEBUG: Finished checking for interrupted backups\n")
 }
 
+// SetSavedBackups sets the list of saved backup configurations from the frontend
+func (a *App) SetSavedBackups(backups []BackupConfig) {
+	a.backupMutex.Lock()
+	defer a.backupMutex.Unlock()
+	
+	a.savedBackups = backups
+	fmt.Fprintf(os.Stderr, "DEBUG: Set %d saved backup configurations\n", len(backups))
+	for i, backup := range backups {
+		fmt.Fprintf(os.Stderr, "DEBUG: Backup %d: %s -> %s\n", i, backup.Name, backup.DestinationPath)
+	}
+}
+
 // getBackupDestinations returns a list of all backup destinations to check for state files
 func (a *App) getBackupDestinations() []string {
 	var destinations []string
+	destinationSet := make(map[string]bool) // Use map to avoid duplicates
+	
+	// Add destinations from saved backup configurations first
+	a.backupMutex.RLock()
+	for _, backup := range a.savedBackups {
+		if backup.DestinationPath != "" && !destinationSet[backup.DestinationPath] {
+			destinations = append(destinations, backup.DestinationPath)
+			destinationSet[backup.DestinationPath] = true
+			fmt.Fprintf(os.Stderr, "DEBUG: Added destination from saved config: %s\n", backup.DestinationPath)
+		}
+	}
+	a.backupMutex.RUnlock()
 	
 	// Get home directory for common locations
 	homeDir, err := os.UserHomeDir()
@@ -155,15 +180,19 @@ func (a *App) getBackupDestinations() []string {
 		return destinations
 	}
 	
-	// Add common backup locations
-	destinations = append(destinations,
+	// Add common backup locations as fallback
+	commonLocations := []string{
 		filepath.Join(homeDir, "Backups"),
 		filepath.Join(homeDir, "backup"),
 		filepath.Join(homeDir, "bbackup"),
-	)
+	}
 	
-	// TODO: Load destinations from saved backup configurations
-	// This would read from wherever backup configs are stored
+	for _, location := range commonLocations {
+		if !destinationSet[location] {
+			destinations = append(destinations, location)
+			destinationSet[location] = true
+		}
+	}
 	
 	return destinations
 }

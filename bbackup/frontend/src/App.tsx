@@ -61,7 +61,14 @@ function BackupApp() {
         const savedBackups = localStorage.getItem('savedBackups');
         if (savedBackups) {
             try {
-                setBackups(JSON.parse(savedBackups));
+                const parsedBackups = JSON.parse(savedBackups);
+                setBackups(parsedBackups);
+                
+                // Send saved backup configurations to backend for state restoration
+                App.SetSavedBackups(parsedBackups).catch(err => {
+                    console.error("Error setting saved backups in backend:", err);
+                    addLog(`Error setting saved backups in backend: ${err}`);
+                });
             } catch (err) {
                 console.error("Error loading saved backups:", err);
                 addLog(`Error loading saved backups: ${err}`);

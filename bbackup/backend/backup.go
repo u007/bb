@@ -113,6 +113,11 @@ func shouldIgnorePattern(fullPath, fileName, pattern string) bool {
 		}
 	}
 
+	// Substring matching for patterns like ".pnpm-store"
+	if strings.Contains(normalizedPath, pattern) {
+		return true
+	}
+	
 	// Simple wildcard matching
 	if matched, _ := filepath.Match("*"+pattern, normalizedPath); matched {
 		return true
