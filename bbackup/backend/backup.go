@@ -25,6 +25,108 @@ type BackupProgress struct {
 // ProgressCallback is a function type for reporting backup progress.
 type ProgressCallback func(progress BackupProgress)
 
+// shouldIgnore checks if a file or directory should be ignored based on patterns
+func shouldIgnore(path string, d fs.DirEntry, ignorePatterns []string) bool {
+	for _, pattern := range ignorePatterns {
+		if pattern == "" {
+			continue
+		}
+
+		// Handle different pattern types
+		if shouldIgnorePattern(path, d.Name(), pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldIgnore is a public wrapper for testing ignore patterns without a DirEntry
+func ShouldIgnore(path string, ignorePatterns []string) bool {
+	// Create a mock DirEntry for testing
+	mockEntry := &mockDirEntry{name: filepath.Base(path), isDir: false}
+	return shouldIgnore(path, mockEntry, ignorePatterns)
+}
+
+// mockDirEntry implements fs.DirEntry for testing
+type mockDirEntry struct {
+	name  string
+	isDir bool
+}
+
+func (m *mockDirEntry) Name() string               { return m.name }
+func (m *mockDirEntry) IsDir() bool              { return m.isDir }
+func (m *mockDirEntry) Type() fs.FileMode        { return 0 }
+func (m *mockDirEntry) Info() (fs.FileInfo, error) { return nil, nil }
+
+// shouldIgnorePattern checks if a path matches a single ignore pattern
+func shouldIgnorePattern(fullPath, fileName, pattern string) bool {
+	// Convert path separators to forward slashes for consistent matching
+	normalizedPath := filepath.ToSlash(fullPath)
+	normalizedPattern := filepath.ToSlash(pattern)
+
+	// Absolute path match
+	if filepath.IsAbs(pattern) && normalizedPath == normalizedPattern {
+		return true
+	}
+
+	// Directory-specific patterns (ending with /)
+	if strings.HasSuffix(normalizedPattern, "/") {
+		dirPattern := strings.TrimSuffix(normalizedPattern, "/")
+		// Check if path is exactly this directory or a subdirectory of it
+		if normalizedPath == dirPattern || strings.HasPrefix(normalizedPath, dirPattern+"/") {
+			return true
+		}
+	}
+
+	// Filename pattern match
+	if matched, _ := filepath.Match(pattern, fileName); matched {
+		return true
+	}
+
+	// Check if any part of the path matches the pattern (for patterns like *.tmp)
+	pathParts := strings.Split(normalizedPath, "/")
+	for _, part := range pathParts {
+		if matched, _ := filepath.Match(pattern, part); matched {
+			return true
+		}
+	}
+
+	// Relative path pattern match against full path
+	if matched, _ := filepath.Match(pattern, normalizedPath); matched {
+		return true
+	}
+
+	// Enhanced path-based matching for patterns with slashes
+	if strings.Contains(normalizedPattern, "/") {
+		// Try to match directory patterns like "src/*.go"
+		if matched, _ := filepath.Match(normalizedPattern, normalizedPath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match(normalizedPattern+"/*", normalizedPath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match("*/"+normalizedPattern, normalizedPath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match("*"+normalizedPattern+"*", normalizedPath); matched {
+			return true
+		}
+	}
+
+	// Simple wildcard matching
+	if matched, _ := filepath.Match("*"+pattern, normalizedPath); matched {
+		return true
+	}
+	if matched, _ := filepath.Match(pattern+"*", normalizedPath); matched {
+		return true
+	}
+	if matched, _ := filepath.Match("*"+pattern+"*", normalizedPath); matched {
+		return true
+	}
+
+	return false
+}
+
 // RunBackup orchestrates the entire backup process for specified source paths to a CAS base directory.
 // It reports progress via the provided ProgressCallback.
 func RunBackup(ctx context.Context, casBaseDir string, sourcePaths []string, ignorePatterns []string, progressCallback ProgressCallback) error {
@@ -42,6 +144,13 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 
 	currentProgress.Status = "Initializing"
 	updateProgress()
+
+	// Log ignore patterns for debugging
+	if len(ignorePatterns) > 0 {
+		fmt.Fprintf(os.Stderr, "DEBUG: Using %d ignore patterns: %v\n", len(ignorePatterns), ignorePatterns)
+	} else {
+		fmt.Fprintf(os.Stderr, "DEBUG: No ignore patterns specified\n")
+	}
 
 	// Check for context cancellation early
 	select {
@@ -145,23 +254,14 @@ func RunBackupWithBatchConfig(ctx context.Context, casBaseDir string, sourcePath
 			}
 
 			// --- IGNORE LOGIC ---
-			for _, pattern := range ignorePatterns {
-				// Check for absolute path match
-				if filepath.IsAbs(pattern) && path == pattern {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil // Skip this file
+			if shouldIgnore(path, d, ignorePatterns) {
+				fmt.Fprintf(os.Stderr, "DEBUG: Ignoring %s (matched pattern)\n", path)
+				if d.IsDir() {
+					return filepath.SkipDir
 				}
-
-				// Check for glob pattern match on the name
-				match, _ := filepath.Match(pattern, d.Name())
-				if match {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil // Skip this file
-				}
+				return nil // Skip this file
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: Processing %s (no pattern matched)\n", path)
 			}
 
 			// Exclude the backup destination directory itself

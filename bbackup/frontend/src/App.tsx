@@ -39,6 +39,7 @@ function BackupApp() {
     const [formSourcePaths, setFormSourcePaths] = useState<string[]>([]);
     const [formDestinationPath, setFormDestinationPath] = useState<string>('');
     const [formIgnorePatterns, setFormIgnorePatterns] = useState<string[]>([]);
+    const [newIgnorePattern, setNewIgnorePattern] = useState<string>('');
     const [formSchedule, setFormSchedule] = useState<string>('manual');
     
     const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | null>(null);
@@ -299,6 +300,7 @@ function BackupApp() {
         setFormSourcePaths([...backup.sourcePaths]);
         setFormDestinationPath(backup.destinationPath);
         setFormIgnorePatterns([...backup.ignorePatterns]);
+        setNewIgnorePattern('');
         setFormSchedule(backup.schedule);
         setShowEditForm(true);
     };
@@ -354,6 +356,10 @@ function BackupApp() {
 
     // Backup control functions
     const handlePauseBackup = async () => {
+        if (backupStatus !== 'Running') {
+            addLog('Cannot pause: No backup is currently running');
+            return;
+        }
         try {
             await App.PauseBackup();
             addLog('Backup paused');
@@ -364,6 +370,10 @@ function BackupApp() {
     };
 
     const handleStopBackup = async () => {
+        if (backupStatus !== 'Running' && backupStatus !== 'Paused') {
+            addLog('Cannot stop: No backup is currently running or paused');
+            return;
+        }
         try {
             await App.StopBackup();
             addLog('Backup stopped');
@@ -374,6 +384,10 @@ function BackupApp() {
     };
 
     const handleResumeBackup = async () => {
+        if (backupStatus !== 'Paused') {
+            addLog('Cannot resume: No backup is currently paused');
+            return;
+        }
         try {
             await App.ResumeBackup();
             addLog('Resuming backup...');
@@ -416,6 +430,7 @@ function BackupApp() {
         setFormSourcePaths([]);
         setFormDestinationPath('');
         setFormIgnorePatterns([]);
+        setNewIgnorePattern('');
         setFormSchedule('manual');
         setSelectedSourceIndex(null);
         setSelectedIgnoreIndex(null);
@@ -516,9 +531,15 @@ function BackupApp() {
     };
 
     const handleFormAddIgnorePattern = () => {
-        const pattern = prompt("Enter an ignore pattern (e.g., 'node_modules', '*.log'):");
-        if (pattern && !formIgnorePatterns.includes(pattern)) {
-            setFormIgnorePatterns(prev => [...prev, pattern]);
+        if (newIgnorePattern.trim() && !formIgnorePatterns.includes(newIgnorePattern.trim())) {
+            setFormIgnorePatterns(prev => [...prev, newIgnorePattern.trim()]);
+            setNewIgnorePattern('');
+        }
+    };
+
+    const handleIgnorePatternKeyPress = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            handleFormAddIgnorePattern();
         }
     };
 
@@ -706,7 +727,7 @@ function BackupApp() {
                                         <div className="flex gap-3 flex-wrap">
                                             <button
                                                 onClick={() => handleRunBackup(backup)}
-                                                disabled={!backup.enabled || isProcessing}
+                                                disabled={!backup.enabled || (backupStatus === 'Running' || backupStatus === 'Paused')}
                                                 className="btn bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
                                             >
                                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -785,7 +806,7 @@ function BackupApp() {
                             </h2>
                             
                             {/* Backup Control Buttons */}
-                            {(canPause || canStop || canResume) && (
+                            {(backupStatus === 'Running' || backupStatus === 'Paused' || backupStatus === 'Stopped') && (
                                 <div className="flex gap-3">
                                     {canPause && (
                                         <button
@@ -1082,35 +1103,53 @@ function BackupApp() {
                                         </ul>
                                     )}
                                 </div>
-                                <div className="flex gap-3 mt-4">
-                                    <button 
-                                        onClick={handleFormAddIgnorePattern} 
-                                        className="btn bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                                        </svg>
-                                        Add Pattern
-                                    </button>
-                                    <button 
-                                        onClick={handleFormRemoveIgnorePattern} 
-                                        disabled={selectedIgnoreIndex === null} 
-                                        className="btn bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                        </svg>
-                                        Remove Selected
-                                    </button>
-                                    <button 
-                                        onClick={handleFormProposeIgnores} 
-                                        className="btn bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                        </svg>
-                                        Propose Defaults
-                                    </button>
+                                <div className="space-y-4">
+                                    <div className="flex gap-3">
+                                        <div className="flex-1">
+                                            <input
+                                                type="text"
+                                                value={newIgnorePattern}
+                                                onChange={(e) => setNewIgnorePattern(e.target.value)}
+                                                onKeyPress={handleIgnorePatternKeyPress}
+                                                placeholder="Enter ignore pattern (e.g., 'node_modules', '*.log', '.git')"
+                                                className="focus-ring w-full px-4 py-3 border border-gray-300 rounded-lg text-base transition-all duration-200 bg-white text-gray-900"
+                                            />
+                                            <div className="mt-2 text-sm text-gray-600">
+                                                <span className="font-medium">Examples:</span> node_modules/, *.tmp, .git, build/, src/*.test.js
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={handleFormAddIgnorePattern} 
+                                            disabled={!newIgnorePattern.trim() || formIgnorePatterns.includes(newIgnorePattern.trim())}
+                                            className="btn bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-medium py-3 px-6 rounded-lg transition-all duration-200 shadow hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                                            </svg>
+                                            Add Pattern
+                                        </button>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <button 
+                                            onClick={handleFormRemoveIgnorePattern} 
+                                            disabled={selectedIgnoreIndex === null} 
+                                            className="btn bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                            Remove Selected
+                                        </button>
+                                        <button 
+                                            onClick={handleFormProposeIgnores} 
+                                            className="btn bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow hover:shadow-lg flex items-center gap-2"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                            </svg>
+                                            Propose Defaults
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
 
