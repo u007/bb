@@ -373,6 +373,13 @@ function BackupApp() {
         } catch (err: any) {
             addLog(`Error pausing backup: ${err}`);
             console.error("Error pausing backup:", err);
+            // Fallback: reset UI state since there's no actual backup running
+            setBackupStatus('Idle');
+            setIsProcessing(false);
+            setCanPause(false);
+            setCanStop(false);
+            setCanResume(false);
+            addLog('Reset backup status - no active backup process found');
         }
     };
 
@@ -387,6 +394,13 @@ function BackupApp() {
         } catch (err: any) {
             addLog(`Error stopping backup: ${err}`);
             console.error("Error stopping backup:", err);
+            // Fallback: reset UI state since there's no actual backup running
+            setBackupStatus('Idle');
+            setIsProcessing(false);
+            setCanPause(false);
+            setCanStop(false);
+            setCanResume(false);
+            addLog('Reset backup status - no active backup process found');
         }
     };
 

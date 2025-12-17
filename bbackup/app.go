@@ -115,9 +115,24 @@ func (a *App) checkAndRestoreInterruptedBackups() {
 			
 			// Only restore if the backup was running, paused, or stopped (not completed/failed)
 			if state.Status == "running" || state.Status == "paused" || state.Status == "stopped" {
+				// Found an active backup, but check if it's actually running
+				// Since we're starting fresh, any "running" backup is actually orphaned
+				if state.Status == "running" {
+					fmt.Fprintf(os.Stderr, "DEBUG: Found running backup state, but no actual process - marking as paused\n")
+					state.Status = "paused" // Convert running to paused since there's no actual process
+					state.LastUpdateTime = time.Now()
+					
+					// Save the updated state
+					updatedData, err := json.MarshalIndent(state, "", "  ")
+					if err == nil {
+						os.WriteFile(filepath.Join(dest, ".backup_state.json"), updatedData, 0644)
+					}
+				}
+				
 				// Found an active backup, restore it
 				a.backupMutex.Lock()
 				a.backupState = state
+				// Don't set backupCancel - there's no actual process to cancel
 				a.backupMutex.Unlock()
 				
 				fmt.Fprintf(os.Stderr, "DEBUG: Restored backup state with ID: %s, Status: %s\n", state.ID, state.Status)
@@ -755,7 +770,35 @@ func (a *App) GetBackupState() *BackupState {
 func (a *App) StopBackup() error {
 	a.backupMutex.Lock()
 	
-	if a.backupState == nil || a.backupCancel == nil {
+	if a.backupState == nil {
+		a.backupMutex.Unlock()
+		return fmt.Errorf("no backup operation in progress")
+	}
+	
+	// Check if we have an actual running backup process (has cancel function)
+	hasActiveProcess := a.backupCancel != nil
+	
+	// If backup appears running but no active process, it's an orphaned state
+	if a.backupState.Status == "running" && !hasActiveProcess {
+		// Clean up the orphaned state
+		a.backupState.Status = "stopped"
+		a.backupState.LastUpdateTime = time.Now()
+		
+		// Save the updated state
+		err := a.saveBackupState()
+		a.backupMutex.Unlock()
+		
+		if err != nil {
+			a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
+		}
+		
+		a.emitEvent("app:log", "Cleaned up orphaned backup state (backup process was not actually running)")
+		a.emitEvent("app:backup:status", "Stopped")
+		
+		return nil
+	}
+	
+	if !hasActiveProcess {
 		a.backupMutex.Unlock()
 		return fmt.Errorf("no backup operation in progress")
 	}
@@ -765,7 +808,7 @@ func (a *App) StopBackup() error {
 		return fmt.Errorf("backup is not running (current status: %s)", a.backupState.Status)
 	}
 	
-	// Cancel the backup
+	// Cancel the actual running backup
 	a.backupCancel()
 	a.backupState.Status = "stopped"
 	a.backupState.LastUpdateTime = time.Now()
@@ -793,6 +836,34 @@ func (a *App) PauseBackup() error {
 		return fmt.Errorf("no backup operation in progress")
 	}
 	
+	// Check if we have an actual running backup process (has cancel function)
+	hasActiveProcess := a.backupCancel != nil
+	
+	// If backup appears running but no active process, it's an orphaned state
+	if a.backupState.Status == "running" && !hasActiveProcess {
+		// Clean up the orphaned state
+		a.backupState.Status = "paused"
+		a.backupState.LastUpdateTime = time.Now()
+		
+		// Save the updated state
+		err := a.saveBackupState()
+		a.backupMutex.Unlock()
+		
+		if err != nil {
+			a.emitEvent("app:log", fmt.Sprintf("Warning: Failed to save backup state: %v", err))
+		}
+		
+		a.emitEvent("app:log", "Cleaned up orphaned backup state (backup process was not actually running)")
+		a.emitEvent("app:backup:status", "Paused")
+		
+		return nil
+	}
+	
+	if !hasActiveProcess {
+		a.backupMutex.Unlock()
+		return fmt.Errorf("no backup operation in progress")
+	}
+	
 	if a.backupState.Status != "running" {
 		a.backupMutex.Unlock()
 		return fmt.Errorf("backup is not running (current status: %s)", a.backupState.Status)
@@ -801,7 +872,7 @@ func (a *App) PauseBackup() error {
 	// Store the current file being processed before canceling
 	currentFile := a.backupState.CurrentFile
 	
-	// Cancel the backup
+	// Cancel the actual running backup
 	a.backupCancel()
 	a.backupState.Status = "paused"
 	a.backupState.LastUpdateTime = time.Now()
