@@ -46,6 +46,10 @@ export function SelectSourceDirectory() {
   return window['go']['main']['App']['SelectSourceDirectory']();
 }
 
+export function SetSavedBackups(arg1) {
+  return window['go']['main']['App']['SetSavedBackups'](arg1);
+}
+
 export function StartBackup(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartBackup'](arg1, arg2, arg3);
 }

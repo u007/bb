@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 import { EventsOn, EventsOff } from '../wailsjs/runtime';
 import * as App from '../wailsjs/go/main/App'; // Import all functions from App namespace
@@ -51,9 +51,20 @@ function BackupApp() {
     const [logOutput, setLogOutput] = useState<string[]>([]);
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const [progress, setProgress] = useState<BackupProgress | null>(null);
+    
+    // Ref for activity log container to enable auto-scroll
+    const activityLogRef = useRef<HTMLDivElement>(null);
     const [canPause, setCanPause] = useState<boolean>(false);
     const [canStop, setCanStop] = useState<boolean>(false);
     const [canResume, setCanResume] = useState<boolean>(false);
+
+    // Auto-scroll activity log to bottom when new entries are added
+    useEffect(() => {
+        if (activityLogRef.current) {
+            // Scroll to bottom of the activity log
+            activityLogRef.current.scrollTop = activityLogRef.current.scrollHeight;
+        }
+    }, [logOutput]);
 
     // Load initial data and set up event listeners
     useEffect(() => {
@@ -937,7 +948,10 @@ function BackupApp() {
                                     Activity Log
                                 </h3>
                             </div>
-                            <div className="max-h-80 overflow-y-auto overflow-x-hidden p-4 text-sm leading-relaxed">
+                            <div 
+                                ref={activityLogRef}
+                                className="max-h-80 overflow-y-auto overflow-x-hidden p-4 text-sm leading-relaxed"
+                            >
                                 {logOutput.length === 0 ? (
                                     <div className="text-center py-8">
                                         <svg className="w-12 h-12 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -24,6 +24,8 @@ export function SelectDestinationDirectory():Promise<string>;
 
 export function SelectSourceDirectory():Promise<string>;
 
+export function SetSavedBackups(arg1:Array<main.BackupConfig>):Promise<void>;
+
 export function StartBackup(arg1:string,arg2:Array<string>,arg3:Array<string>):Promise<void>;
 
 export function StopBackup():Promise<void>;
