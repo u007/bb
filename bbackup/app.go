@@ -64,11 +64,13 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: App startup called, restoring backup state\n")
+	
 	// Start event emitter goroutine
 	go a.eventEmitter()
 	
-	// Check for any interrupted backups and restore state
-	go a.checkAndRestoreInterruptedBackups()
+	// Check for any interrupted backups and restore state immediately (blocking)
+	a.checkAndRestoreInterruptedBackups()
 }
 
 // eventEmitter runs in a separate goroutine and emits queued events
@@ -99,6 +101,8 @@ func (a *App) emitEvent(name string, data interface{}) {
 
 // checkAndRestoreInterruptedBackups looks for any backup state files and restores them
 func (a *App) checkAndRestoreInterruptedBackups() {
+	fmt.Fprintf(os.Stderr, "DEBUG: Checking for interrupted backups\n")
+	
 	// Get suggested destination paths or use common locations
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -108,31 +112,49 @@ func (a *App) checkAndRestoreInterruptedBackups() {
 	
 	// Common backup destinations to check
 	commonDests := []string{
+		"/Volumes/bb/james", // Your specific backup path
 		filepath.Join(homeDir, "Backups"),
 		filepath.Join(homeDir, "backup"),
 		filepath.Join(homeDir, "bbackup"),
 	}
 	
+	fmt.Fprintf(os.Stderr, "DEBUG: Checking %d common destinations\n", len(commonDests))
+	
 	for _, dest := range commonDests {
+		fmt.Fprintf(os.Stderr, "DEBUG: Checking destination: %s\n", dest)
 		if state, err := a.loadBackupState(dest); err == nil && state != nil {
-			// Found an interrupted backup
-			a.backupMutex.Lock()
-			a.backupState = state
-			a.backupMutex.Unlock()
+			fmt.Fprintf(os.Stderr, "DEBUG: Found backup state in %s with status: %s\n", dest, state.Status)
 			
-			a.emitEvent("app:log", fmt.Sprintf("Found interrupted backup in %s", dest))
-			a.emitEvent("app:backup:resumable", fmt.Sprintf("Interrupted backup found in %s", dest))
-			a.emitEvent("app:backup:status", state.Status)
-			
-			// Send current progress to frontend
-			jsonProgress, err := json.Marshal(state.Progress)
-			if err == nil {
-				a.emitEvent("app:backup:progress", string(jsonProgress))
+			// Only restore if the backup was running, paused, or stopped (not completed/failed)
+			if state.Status == "running" || state.Status == "paused" || state.Status == "stopped" {
+				// Found an active backup, restore it
+				a.backupMutex.Lock()
+				a.backupState = state
+				a.backupMutex.Unlock()
+				
+				fmt.Fprintf(os.Stderr, "DEBUG: Restored backup state with ID: %s, Status: %s\n", state.ID, state.Status)
+				a.emitEvent("app:log", fmt.Sprintf("Restored backup state from %s (Status: %s)", dest, state.Status))
+				a.emitEvent("app:backup:status", state.Status)
+				
+				// Send current progress to frontend
+				if state.Progress.TotalFiles > 0 || state.Progress.FilesProcessed > 0 {
+					jsonProgress, err := json.Marshal(state.Progress)
+					if err == nil {
+						a.emitEvent("app:backup:progress", string(jsonProgress))
+						fmt.Fprintf(os.Stderr, "DEBUG: Sent progress update to frontend\n")
+					}
+				}
+				
+				break // Only restore the first one found
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: Skipping backup with status: %s (not active)\n", state.Status)
 			}
-			
-			break // Only restore the first one found
+		} else {
+			fmt.Fprintf(os.Stderr, "DEBUG: No backup state found in %s\n", dest)
 		}
 	}
+	
+	fmt.Fprintf(os.Stderr, "DEBUG: Finished checking for interrupted backups\n")
 }
 
 // CheckAllBackupStates checks all possible backup destinations for running backups
@@ -146,6 +168,7 @@ func (a *App) CheckAllBackupStates() map[string]*BackupState {
 	
 	// Check common backup destinations
 	commonDests := []string{
+		"/Volumes/bb/james", // Your specific backup path
 		filepath.Join(homeDir, "Backups"),
 		filepath.Join(homeDir, "backup"),
 		filepath.Join(homeDir, "bbackup"),
