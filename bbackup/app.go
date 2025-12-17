@@ -103,24 +103,11 @@ func (a *App) emitEvent(name string, data interface{}) {
 func (a *App) checkAndRestoreInterruptedBackups() {
 	fmt.Fprintf(os.Stderr, "DEBUG: Checking for interrupted backups\n")
 	
-	// Get suggested destination paths or use common locations
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		a.emitEvent("app:log", "Warning: Could not determine home directory")
-		return
-	}
+	// Get all backup destinations to check
+	destinations := a.getBackupDestinations()
+	fmt.Fprintf(os.Stderr, "DEBUG: Checking %d destinations for backup state\n", len(destinations))
 	
-	// Common backup destinations to check
-	commonDests := []string{
-		"/Volumes/bb/james", // Your specific backup path
-		filepath.Join(homeDir, "Backups"),
-		filepath.Join(homeDir, "backup"),
-		filepath.Join(homeDir, "bbackup"),
-	}
-	
-	fmt.Fprintf(os.Stderr, "DEBUG: Checking %d common destinations\n", len(commonDests))
-	
-	for _, dest := range commonDests {
+	for _, dest := range destinations {
 		fmt.Fprintf(os.Stderr, "DEBUG: Checking destination: %s\n", dest)
 		if state, err := a.loadBackupState(dest); err == nil && state != nil {
 			fmt.Fprintf(os.Stderr, "DEBUG: Found backup state in %s with status: %s\n", dest, state.Status)
@@ -157,24 +144,38 @@ func (a *App) checkAndRestoreInterruptedBackups() {
 	fmt.Fprintf(os.Stderr, "DEBUG: Finished checking for interrupted backups\n")
 }
 
+// getBackupDestinations returns a list of all backup destinations to check for state files
+func (a *App) getBackupDestinations() []string {
+	var destinations []string
+	
+	// Get home directory for common locations
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		a.emitEvent("app:log", "Warning: Could not determine home directory")
+		return destinations
+	}
+	
+	// Add common backup locations
+	destinations = append(destinations,
+		filepath.Join(homeDir, "Backups"),
+		filepath.Join(homeDir, "backup"),
+		filepath.Join(homeDir, "bbackup"),
+	)
+	
+	// TODO: Load destinations from saved backup configurations
+	// This would read from wherever backup configs are stored
+	
+	return destinations
+}
+
 // CheckAllBackupStates checks all possible backup destinations for running backups
 func (a *App) CheckAllBackupStates() map[string]*BackupState {
 	result := make(map[string]*BackupState)
 	
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return result
-	}
+	// Get all backup destinations to check
+	destinations := a.getBackupDestinations()
 	
-	// Check common backup destinations
-	commonDests := []string{
-		"/Volumes/bb/james", // Your specific backup path
-		filepath.Join(homeDir, "Backups"),
-		filepath.Join(homeDir, "backup"),
-		filepath.Join(homeDir, "bbackup"),
-	}
-	
-	for _, dest := range commonDests {
+	for _, dest := range destinations {
 		if state, err := a.loadBackupState(dest); err == nil && state != nil {
 			result[dest] = state
 		}
